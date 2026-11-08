@@ -1,0 +1,45 @@
+[general]
+default_interval_secs = 30      # varsayılan kontrol aralığı
+jitter_percent = 15             # aralığa ±% rastgelelik
+confirm_checks = 2              # "boşaldı" demek için ardışık 404 sayısı
+request_timeout_ms = 5000
+database_path = "data/vanity.db"
+log_dir = "logs"
+log_level = "info"              # trace | debug | info | warn | error
+
+[ratelimit]
+max_requests_per_minute = 40    # tüm hedefler için ortak bütçe
+backoff_max_secs = 300          # ardışık hatalarda üst sınır
+
+[notify]
+on_free = true
+on_taken = false                # boştaki URL tekrar alınınca da haber ver
+on_claim = true
+on_error = true                 # checker uzun süre çalışamazsa
+
+[notify.discord]
+enabled = true
+# URL: VG_DISCORD_WEBHOOK
+mention = "<@123456789012345678>"   # opsiyonel ping
+
+[notify.telegram]
+enabled = true
+# Token: VG_TELEGRAM_TOKEN
+chat_id = "123456789"
+
+[auto_claim]
+enabled = false                 # bilerek açılmalı, bkz. GUVENLIK.md
+# Token: VG_USER_TOKEN
+target_guild_id = "000000000000000000"
+max_attempts = 3
+confirm_checks_override = 1     # auto-claim açıkken onay sayısı
+
+[[targets]]
+code = "ornekkod"
+interval_secs = 20              # opsiyonel, varsayılanı ezer
+priority = "high"               # high | normal | low
+auto_claim = true               # bu hedef için otomatik alma (global açıksa)
+
+[[targets]]
+code = "baskakod"
+auto_claim = false              # sadece bildirim
