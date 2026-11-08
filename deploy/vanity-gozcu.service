@@ -1,0 +1,17 @@
+[Unit]
+Description=VanityGözcü
+After=network-online.target
+
+[Service]
+ExecStart=/opt/vanity-gozcu/vanity-gozcu daemon
+WorkingDirectory=/opt/vanity-gozcu
+EnvironmentFile=/etc/vanity-gozcu/env
+Restart=on-failure
+RestartSec=5
+User=vanity
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/vanity-gozcu/data /opt/vanity-gozcu/logs
+
+[Install]
+WantedBy=multi-user.target

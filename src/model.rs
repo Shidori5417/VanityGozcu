@@ -1,9 +1,9 @@
 //! Shared domain types.
 
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Relative check frequency of a target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -101,6 +101,106 @@ impl fmt::Display for CheckResult {
             CheckResult::Unknown { status } => write!(f, "UNKNOWN (HTTP {status})"),
         }
     }
+}
+
+/// Lifecycle state of a watched code (see MIMARI.md).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum VanityState {
+    /// Nothing observed yet.
+    #[default]
+    Unknown,
+    /// Owned by a guild.
+    Taken {
+        guild_id: Option<String>,
+        guild_name: Option<String>,
+    },
+    /// Looks free but not yet confirmed: `count` consecutive free results so far.
+    FreeSuspected {
+        count: u32,
+        previous_owner: Option<String>,
+    },
+    /// Confirmed free.
+    Free,
+    /// We claimed it (stage 4).
+    Claimed,
+    /// We held it and lost it again (stage 4).
+    Lost,
+}
+
+impl fmt::Display for VanityState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            VanityState::Unknown => write!(f, "unknown"),
+            VanityState::Taken { guild_name, .. } => {
+                write!(f, "taken ({})", guild_name.as_deref().unwrap_or("?"))
+            }
+            VanityState::FreeSuspected { count, .. } => write!(f, "free? ({count})"),
+            VanityState::Free => write!(f, "free"),
+            VanityState::Claimed => write!(f, "claimed"),
+            VanityState::Lost => write!(f, "lost"),
+        }
+    }
+}
+
+/// A notable state transition. Never contains secrets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Event {
+    BecameFree {
+        code: String,
+        previous_owner: Option<String>,
+    },
+    BecameTaken {
+        code: String,
+        guild_name: Option<String>,
+    },
+    CheckerDegraded {
+        code: String,
+        reason: String,
+    },
+    ClaimSucceeded {
+        code: String,
+    },
+    ClaimFailed {
+        code: String,
+        reason: String,
+    },
+    ClaimNeedsVerification {
+        code: String,
+    },
+}
+
+impl Event {
+    pub fn code(&self) -> &str {
+        match self {
+            Event::BecameFree { code, .. }
+            | Event::BecameTaken { code, .. }
+            | Event::CheckerDegraded { code, .. }
+            | Event::ClaimSucceeded { code }
+            | Event::ClaimFailed { code, .. }
+            | Event::ClaimNeedsVerification { code } => code,
+        }
+    }
+
+    /// Stable snake_case name, also stored in the `events.kind` column.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Event::BecameFree { .. } => "became_free",
+            Event::BecameTaken { .. } => "became_taken",
+            Event::CheckerDegraded { .. } => "checker_degraded",
+            Event::ClaimSucceeded { .. } => "claim_succeeded",
+            Event::ClaimFailed { .. } => "claim_failed",
+            Event::ClaimNeedsVerification { .. } => "claim_needs_verification",
+        }
+    }
+}
+
+/// An [`Event`] with the time it was detected; this is what is broadcast.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventRecord {
+    pub event: Event,
+    pub at: SystemTime,
 }
 
 #[cfg(test)]
