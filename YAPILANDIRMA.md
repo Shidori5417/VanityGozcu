@@ -68,7 +68,8 @@ systemd için bunlar `EnvironmentFile=/etc/vanity-gozcu/env` (izin `600`) ile ve
 - `code`: 2–32 karakter, `[a-z0-9-]`, küçük harfe çevrilir, tekrar eden kod reddedilir.
 - Hedef sayısı > 25 ise uyarı (bu araç az sayıda URL için tasarlandı).
 - `max_requests_per_minute`, hedef sayısı ve aralıklarla tutarsızsa (bütçe yetmiyorsa) başlangıçta uyarı ve hesaplanan gerçek aralık gösterilir.
-- `auto_claim.enabled = true` ama `VG_USER_TOKEN` yoksa: auto-claim kapalı başlar, TUI'de uyarı.
+- `auto_claim.enabled = true` ama `VG_USER_TOKEN` veya `target_guild_id` yoksa: auto-claim kapalı başlar, TUI'de uyarı.
+- `target_guild_id` yalnızca rakamlardan oluşmalı; `max_attempts` ve `confirm_checks_override` en az 1.
 
 ## TUI'den değişiklik
 

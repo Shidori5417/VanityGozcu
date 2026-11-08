@@ -316,6 +316,18 @@ impl Config {
             return invalid("ratelimit.max_requests_per_minute must be at least 1");
         }
 
+        if self.auto_claim.max_attempts == 0 {
+            return invalid("auto_claim.max_attempts must be at least 1");
+        }
+        if self.auto_claim.confirm_checks_override == 0 {
+            return invalid("auto_claim.confirm_checks_override must be at least 1");
+        }
+        if let Some(id) = &self.auto_claim.target_guild_id
+            && (id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return invalid("auto_claim.target_guild_id must be a numeric guild id");
+        }
+
         let mut seen = HashSet::new();
         for target in &mut self.targets {
             target.code = normalize_code(&target.code)?;
@@ -342,6 +354,15 @@ impl Config {
             warnings.push(format!(
                 "auto_claim.enabled = true but {ENV_USER_TOKEN} is not set; auto-claim is disabled"
             ));
+        }
+
+        if self.auto_claim.enabled && self.auto_claim.target_guild_id.is_none() {
+            self.auto_claim.enabled = false;
+            warnings.push(
+                "auto_claim.enabled = true but auto_claim.target_guild_id is not set; \
+                 auto-claim is disabled"
+                    .to_owned(),
+            );
         }
 
         let budget = self.budget();
@@ -557,13 +578,36 @@ mod tests {
         assert!(!loaded.config.auto_claim.enabled);
         assert!(loaded.warnings.iter().any(|w| w.contains(ENV_USER_TOKEN)));
 
-        let secrets = Secrets {
+        let secrets = || Secrets {
             user_token: Some(SecretString::from("user-token-value")),
             ..Secrets::default()
         };
-        let loaded = Config::parse(raw, secrets).unwrap();
+        // A token alone is not enough: the target guild is needed too.
+        let loaded = Config::parse(raw, secrets()).unwrap();
+        assert!(!loaded.config.auto_claim.enabled);
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|w| w.contains("target_guild_id"))
+        );
+
+        let raw = "[auto_claim]\nenabled = true\ntarget_guild_id = \"123456789012345678\"";
+        let loaded = Config::parse(raw, secrets()).unwrap();
         assert!(loaded.config.auto_claim.enabled);
         assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn auto_claim_values_are_validated() {
+        for raw in [
+            "[auto_claim]\ntarget_guild_id = \"12/../34\"",
+            "[auto_claim]\ntarget_guild_id = \"\"",
+            "[auto_claim]\nmax_attempts = 0",
+            "[auto_claim]\nconfirm_checks_override = 0",
+        ] {
+            assert!(matches!(parse(raw), Err(ConfigError::Invalid(_))), "{raw}");
+        }
     }
 
     #[test]

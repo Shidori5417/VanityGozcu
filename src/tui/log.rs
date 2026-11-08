@@ -1,7 +1,9 @@
 //! Event log panel.
 
 use std::collections::VecDeque;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
+
+use chrono::{DateTime, Local};
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -86,15 +88,9 @@ pub fn describe(event: &Event) -> (LogStyle, String) {
     }
 }
 
-/// `HH:MM:SS` in UTC.
+/// `HH:MM:SS` in the local time zone.
 pub fn clock(at: SystemTime) -> String {
-    let secs = at.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) % 86_400;
-    format!(
-        "{:02}:{:02}:{:02}",
-        secs / 3600,
-        (secs % 3600) / 60,
-        secs % 60
-    )
+    DateTime::<Local>::from(at).format("%H:%M:%S").to_string()
 }
 
 /// Bounded log with a scroll position counted in lines up from the newest.
@@ -150,9 +146,9 @@ impl Log {
 
 pub fn render(frame: &mut Frame, area: Rect, log: &Log) {
     let title = if log.scroll > 0 {
-        format!(" Events (UTC) - scrolled up {} ", log.scroll)
+        format!(" Events (local time) - scrolled up {} ", log.scroll)
     } else {
-        " Events (UTC) ".to_owned()
+        " Events (local time) ".to_owned()
     };
     let block = Block::default().borders(Borders::ALL).title(title);
     let height = usize::from(block.inner(area).height);
@@ -175,9 +171,10 @@ pub fn render(frame: &mut Frame, area: Rect, log: &Log) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
 
     fn t(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
@@ -203,9 +200,19 @@ mod tests {
     }
 
     #[test]
-    fn clock_formats_utc() {
-        assert_eq!(clock(t(3600 * 13 + 60 * 5 + 7)), "13:05:07");
-        assert_eq!(clock(t(86_400 + 1)), "00:00:01");
+    fn clock_uses_the_local_time_zone() {
+        let at = t(1_700_000_000);
+        let text = clock(at);
+        assert_eq!(text.len(), 8);
+        assert_eq!(&text[2..3], ":");
+        // Same instant rendered through chrono's local zone, whatever the machine's zone is.
+        let local = DateTime::<Local>::from(at);
+        assert_eq!(text, local.format("%H:%M:%S").to_string());
+        // The offset is applied: UTC time of day differs from local by the zone offset.
+        let utc = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let offset = i64::from(local.offset().local_minus_utc());
+        let shifted = utc + chrono::Duration::seconds(offset);
+        assert_eq!(text, shifted.format("%H:%M:%S").to_string());
     }
 
     #[test]

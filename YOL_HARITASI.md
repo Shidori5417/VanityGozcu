@@ -25,11 +25,11 @@ Her aşama çalışan, test edilmiş bir sürümle biter.
 - [ ] Terminal yeniden boyutlandırma, temiz çıkış (panic'te terminali geri yükleme)
 
 ## Aşama 4: Otomatik alma
-- [ ] `claimer.rs`: PATCH isteği, yanıt sınıflandırma
-- [ ] Başlangıç ön kontrolü (sunucu özelliği, yetki)
-- [ ] Doğrulama istenince durma + acil bildirim
-- [ ] TUI'de mod değiştirme + risk onay penceresi
-- [ ] Hedef bazlı `auto_claim` açma/kapama
+- [x] `claimer.rs`: PATCH isteği, yanıt sınıflandırma
+- [x] Başlangıç ön kontrolü (sunucu özelliği, yetki)
+- [x] Doğrulama istenince durma + acil bildirim
+- [x] TUI'de mod değiştirme + risk onay penceresi
+- [x] Hedef bazlı `auto_claim` açma/kapama
 
 ## Aşama 5: Cilalama
 - [ ] `daemon` + TUI'nin Unix socket ile bağlanması (VDS'te servis çalışırken TUI ile izleme)

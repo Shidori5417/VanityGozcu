@@ -12,6 +12,9 @@
 //!   state other than `Free`. A persisted `Free` that is still free after a restart
 //!   emits nothing, because the engine is seeded from the store.
 //! * `BecameTaken` is emitted only for `Free -> Taken`.
+//! * A claim that succeeded makes the code `Claimed` ([`StateEngine::mark_claimed`]);
+//!   results are then ignored. After a *failed* claim ([`StateEngine::mark_claim_failed`])
+//!   a `Free -> Taken` flip means someone else got it and the state becomes `Lost`.
 //! * Delivery is at-most-once: state is persisted before the event is broadcast.
 
 use std::collections::HashMap;
@@ -35,6 +38,8 @@ struct Entry {
     updated_at: Option<SystemTime>,
     consecutive_errors: u32,
     degraded_reported: bool,
+    /// Our claim attempt for the current `Free` period failed.
+    claim_failed: bool,
 }
 
 #[derive(Debug)]
@@ -47,6 +52,26 @@ pub struct StateEngine {
 impl StateEngine {
     pub fn new(confirm_checks: u32) -> Self {
         Self::with_degraded_threshold(confirm_checks, DEFAULT_DEGRADED_THRESHOLD)
+    }
+
+    /// Changes the number of consecutive free results that confirm `Free` (min 1).
+    pub fn set_confirm_checks(&mut self, confirm_checks: u32) {
+        self.confirm_checks = confirm_checks.max(1);
+    }
+
+    /// Records that our claim of `code` succeeded.
+    pub fn mark_claimed(&mut self, code: &str, now: SystemTime) {
+        let entry = self.entries.entry(code.to_owned()).or_default();
+        entry.state = VanityState::Claimed;
+        entry.updated_at = Some(now);
+        entry.claim_failed = false;
+    }
+
+    /// Records that our claim of `code` failed, so a later `Taken` means it is lost.
+    pub fn mark_claim_failed(&mut self, code: &str) {
+        if let Some(entry) = self.entries.get_mut(code) {
+            entry.claim_failed = true;
+        }
     }
 
     pub fn with_degraded_threshold(confirm_checks: u32, degraded_threshold: u32) -> Self {
@@ -121,6 +146,19 @@ impl StateEngine {
                     return None;
                 }
                 let was_free = entry.state == VanityState::Free;
+                let claim_failed = std::mem::take(&mut entry.claim_failed);
+                if was_free && claim_failed {
+                    // We tried and failed, and now someone else holds it.
+                    entry.state = VanityState::Lost;
+                    entry.updated_at = Some(now);
+                    return Some(Event::BecameTaken {
+                        code: code.to_owned(),
+                        guild_name: guild_name.clone(),
+                    });
+                }
+                if entry.state == VanityState::Lost {
+                    return None;
+                }
                 if entry.state != new {
                     entry.state = new;
                     entry.updated_at = Some(now);
@@ -144,6 +182,7 @@ impl StateEngine {
                 };
                 entry.updated_at = Some(now);
                 if count >= confirm {
+                    entry.claim_failed = false;
                     entry.state = VanityState::Free;
                     Some(Event::BecameFree {
                         code: code.to_owned(),
@@ -365,6 +404,49 @@ mod tests {
         e.restore("xyz", VanityState::Lost, now());
         assert!(matches!(
             e.apply("xyz", &CheckResult::Free, now()),
+            Some(Event::BecameFree { .. })
+        ));
+    }
+
+    #[test]
+    fn failed_claim_then_taken_is_lost_and_stays_lost() {
+        let mut e = StateEngine::new(1);
+        e.apply("abc", &taken("Old"), now());
+        assert!(e.apply("abc", &CheckResult::Free, now()).is_some());
+        e.mark_claim_failed("abc");
+        assert!(matches!(
+            e.apply("abc", &taken("Other"), now()),
+            Some(Event::BecameTaken { .. })
+        ));
+        assert_eq!(e.state("abc"), VanityState::Lost);
+        assert_eq!(e.apply("abc", &taken("Other"), now()), None);
+        assert_eq!(e.state("abc"), VanityState::Lost);
+        // Free again later: a fresh BecameFree.
+        assert!(matches!(
+            e.apply("abc", &CheckResult::Free, now()),
+            Some(Event::BecameFree { .. })
+        ));
+    }
+
+    #[test]
+    fn without_a_failed_claim_taken_is_plain_taken() {
+        let mut e = StateEngine::new(1);
+        e.apply("abc", &CheckResult::Free, now());
+        e.apply("abc", &taken("Other"), now());
+        assert!(matches!(e.state("abc"), VanityState::Taken { .. }));
+    }
+
+    #[test]
+    fn mark_claimed_sticks_and_confirm_checks_can_change() {
+        let mut e = StateEngine::new(3);
+        e.apply("abc", &CheckResult::Free, now());
+        e.mark_claimed("abc", now());
+        assert_eq!(e.state("abc"), VanityState::Claimed);
+        assert_eq!(e.apply("abc", &taken("Us"), now()), None);
+        assert_eq!(e.apply("abc", &CheckResult::Free, now()), None);
+        e.set_confirm_checks(1);
+        assert!(matches!(
+            e.apply("new", &CheckResult::Free, now()),
             Some(Event::BecameFree { .. })
         ));
     }

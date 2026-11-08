@@ -12,8 +12,9 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
 use vanity_gozcu::checker::{Checker, DEFAULT_BASE_URL};
-use vanity_gozcu::config::{Config, Loaded, normalize_code};
-use vanity_gozcu::engine::{Engine, EngineInit};
+use vanity_gozcu::claimer::Claimer;
+use vanity_gozcu::config::{Config, ENV_USER_TOKEN, Loaded, normalize_code};
+use vanity_gozcu::engine::{ClaimInit, DEFAULT_RECHECK_DELAY, Engine, EngineInit};
 use vanity_gozcu::model::CheckResult;
 use vanity_gozcu::notify::{Message, Notifiers};
 use vanity_gozcu::pipeline;
@@ -175,6 +176,39 @@ async fn shutdown_signal() -> Result<()> {
     Ok(())
 }
 
+/// Builds the claimer when a token and a target guild are configured. The mode itself
+/// (`[auto_claim] enabled`) can still be off; the TUI switches it at runtime.
+fn claim_init(config: &Config, limiter: Arc<RateLimiter>) -> ClaimInit {
+    let ac = &config.auto_claim;
+    let mut init = ClaimInit {
+        claimer: None,
+        unavailable: None,
+        enabled: ac.enabled,
+        confirm_checks: config.general.confirm_checks,
+        confirm_override: ac.confirm_checks_override,
+    };
+    let (Some(token), Some(guild_id)) = (&config.secrets.user_token, &ac.target_guild_id) else {
+        init.unavailable = Some(if config.secrets.user_token.is_none() {
+            format!("{ENV_USER_TOKEN} is not set")
+        } else {
+            "auto_claim.target_guild_id is not set".to_owned()
+        });
+        return init;
+    };
+    match Claimer::new(
+        DEFAULT_BASE_URL,
+        token,
+        guild_id,
+        config.request_timeout(),
+        ac.max_attempts,
+        limiter,
+    ) {
+        Ok(claimer) => init.claimer = Some(Arc::new(claimer)),
+        Err(e) => init.unavailable = Some(e.to_string()),
+    }
+    init
+}
+
 async fn monitor(tui_mode: bool) -> Result<()> {
     let loaded = load_config()?;
     let config = loaded.config;
@@ -230,6 +264,10 @@ async fn monitor(tui_mode: bool) -> Result<()> {
         jitter_percent: config.general.jitter_percent,
         backoff_max: Duration::from_secs(config.ratelimit.backoff_max_secs),
     };
+    let claim = claim_init(&config, limiter.clone());
+    if let Some(reason) = &claim.unavailable {
+        info!("auto-claim unavailable: {reason}");
+    }
     let scheduler = scheduler::spawn(settings, checker, limiter, config.targets.clone());
     let mut engine = Engine::new(EngineInit {
         state,
@@ -240,6 +278,8 @@ async fn monitor(tui_mode: bool) -> Result<()> {
         targets: config.targets,
         config_path: Config::resolve_path().0,
         warnings,
+        claim,
+        recheck_delay: DEFAULT_RECHECK_DELAY,
     });
 
     let outcome = if tui_mode {

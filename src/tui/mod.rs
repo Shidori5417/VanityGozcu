@@ -23,15 +23,16 @@ use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{MissedTickBehavior, interval};
 
 use crate::engine::{
-    CommandReply, EngineCommand, EngineError, EngineHandle, NoticeLevel, Snapshot, TargetView,
-    Update, UpdateKind,
+    ClaimStatus, CommandReply, EngineCommand, EngineError, EngineHandle, NoticeLevel,
+    PrecheckState, Snapshot, TargetView, Update, UpdateKind,
 };
 use dialogs::{Dialog, Outcome};
 use log::{Log, LogStyle};
@@ -63,6 +64,7 @@ pub struct App {
     pub selected: usize,
     pub log: Log,
     pub dialog: Option<Dialog>,
+    pub claim: ClaimStatus,
     pub now: SystemTime,
     last_seq: u64,
     loaded: bool,
@@ -75,6 +77,10 @@ impl App {
             selected: 0,
             log: Log::default(),
             dialog: None,
+            claim: ClaimStatus {
+                mode: false,
+                precheck: PrecheckState::Idle,
+            },
             now,
             last_seq: 0,
             loaded: false,
@@ -93,6 +99,7 @@ impl App {
     /// warnings and recent events.
     pub fn apply_snapshot(&mut self, snapshot: Snapshot) {
         self.targets = snapshot.targets;
+        self.claim = snapshot.claim;
         self.last_seq = snapshot.seq;
         self.clamp_selection();
         if !self.loaded {
@@ -129,6 +136,7 @@ impl App {
                 let (style, text) = log::describe(&record.event);
                 self.log.push(record.at, style, text);
             }
+            UpdateKind::AutoClaim(status) => self.claim = status,
             UpdateKind::Notice { level, text } => {
                 self.log.push(self.now, LogStyle::from(level), text);
             }
@@ -146,6 +154,24 @@ impl App {
             ),
             CommandReply::Snapshot(_) => {}
         }
+    }
+
+    /// `m`: switching off is immediate, switching on needs the risk confirmation.
+    fn toggle_mode(&mut self) -> Option<Action> {
+        if self.claim.mode {
+            return Some(Action::Send(EngineCommand::SetAutoClaim { enabled: false }));
+        }
+        match &self.claim.precheck {
+            PrecheckState::Unavailable { reason } | PrecheckState::Halted { reason } => {
+                self.log.push(
+                    self.now,
+                    LogStyle::Error,
+                    format!("auto-claim cannot be enabled: {reason}"),
+                );
+            }
+            _ => self.dialog = Some(Dialog::ConfirmAutoClaim),
+        }
+        None
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
@@ -193,27 +219,82 @@ impl App {
                 }
             }
             KeyCode::Char('t') => return Some(Action::Send(EngineCommand::TestNotify)),
-            KeyCode::Char('m') => self.log.push(
-                self.now,
-                LogStyle::Info,
-                "mode switching (notify / auto-claim) arrives in stage 4",
-            ),
+            KeyCode::Char('m') => return self.toggle_mode(),
+            KeyCode::Char('x' | ' ') => {
+                if let Some(target) = self.targets.get(self.selected) {
+                    return Some(Action::Send(EngineCommand::SetTargetAutoClaim {
+                        code: target.code.clone(),
+                        enabled: !target.auto_claim.unwrap_or(true),
+                    }));
+                }
+            }
             _ => {}
         }
         None
     }
 }
 
-const HELP: &str =
-    " a add  d delete  c check now  t test notify  m mode  j/k move  PgUp/PgDn log  q quit";
+const HELP: &str = " a add  d delete  c check now  x target auto-claim  m mode  t test notify  \
+                    j/k move  PgUp/PgDn log  q quit";
+
+/// One-line header: current mode and the state of the auto-claim precheck.
+fn status_line(claim: &ClaimStatus) -> Line<'static> {
+    let dim = Style::new().fg(Color::DarkGray);
+    let bold = Modifier::BOLD;
+    let mut spans = vec![Span::raw(" Mode: ")];
+    if claim.mode {
+        spans.push(Span::styled(
+            "AUTO-CLAIM",
+            Style::new().fg(Color::Red).add_modifier(bold),
+        ));
+        spans.push(Span::raw("  "));
+        spans.push(match &claim.precheck {
+            PrecheckState::Ok { note: None } => {
+                Span::styled("precheck ok, armed", Style::new().fg(Color::Green))
+            }
+            PrecheckState::Ok { note: Some(note) } => Span::styled(
+                format!("precheck ok, armed ({note})"),
+                Style::new().fg(Color::Green),
+            ),
+            PrecheckState::Idle | PrecheckState::Running => {
+                Span::styled("precheck running...", Style::new().fg(Color::Yellow))
+            }
+            PrecheckState::Failed { reason } => Span::styled(
+                format!("INACTIVE - precheck failed: {reason}"),
+                Style::new().fg(Color::Red),
+            ),
+            PrecheckState::Halted { reason } | PrecheckState::Unavailable { reason } => {
+                Span::styled(format!("HALTED: {reason}"), Style::new().fg(Color::Red))
+            }
+        });
+    } else {
+        spans.push(Span::styled(
+            "NOTIFY-ONLY",
+            Style::new().fg(Color::Gray).add_modifier(bold),
+        ));
+        spans.push(match &claim.precheck {
+            PrecheckState::Unavailable { reason } => {
+                Span::styled(format!("  (auto-claim unavailable: {reason})"), dim)
+            }
+            PrecheckState::Halted { reason } => Span::styled(
+                format!("  (auto-claim halted: {reason})"),
+                Style::new().fg(Color::Red),
+            ),
+            _ => Span::styled("  (m: enable auto-claim)", dim),
+        });
+    }
+    Line::from(spans)
+}
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    let [main, events, footer] = Layout::vertical([
+    let [header, main, events, footer] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Percentage(55),
         Constraint::Percentage(45),
         Constraint::Length(1),
     ])
     .areas(frame.area());
+    frame.render_widget(Paragraph::new(status_line(&app.claim)), header);
     table::render(frame, main, &app.targets, app.selected, app.now);
     log::render(frame, events, &app.log);
     frame.render_widget(
@@ -344,6 +425,10 @@ mod tests {
             targets: codes.iter().map(|c| view(c)).collect(),
             events: vec![],
             warnings: vec![],
+            claim: ClaimStatus {
+                mode: false,
+                precheck: PrecheckState::Idle,
+            },
         }
     }
 
@@ -359,10 +444,6 @@ mod tests {
 
     fn update(seq: u64, kind: UpdateKind) -> Update {
         Update { seq, kind }
-    }
-
-    fn log_texts(app: &App) -> Vec<String> {
-        app.log.lines().map(|l| l.text.clone()).collect()
     }
 
     #[test]
@@ -457,8 +538,125 @@ mod tests {
             app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
             Some(Action::Quit)
         );
+        // Per-target toggle: unset counts as on, so the first press turns it off.
+        assert_eq!(
+            app.handle_key(key('x')),
+            Some(Action::Send(EngineCommand::SetTargetAutoClaim {
+                code: "abc".into(),
+                enabled: false
+            }))
+        );
+        app.targets[0].auto_claim = Some(false);
+        assert_eq!(
+            app.handle_key(key(' ')),
+            Some(Action::Send(EngineCommand::SetTargetAutoClaim {
+                code: "abc".into(),
+                enabled: true
+            }))
+        );
+        assert_eq!(app_with(&[]).handle_key(key('x')), None);
+    }
+
+    fn app_with_claim(precheck: PrecheckState, mode: bool) -> App {
+        let mut app = app_with(&["abc"]);
+        app.claim = ClaimStatus { mode, precheck };
+        app
+    }
+
+    #[test]
+    fn m_opens_the_risk_dialog_and_only_y_enables() {
+        let mut app = app_with_claim(PrecheckState::Idle, false);
+        assert_eq!(app.handle_key(key('m')), None);
+        assert_eq!(app.dialog, Some(Dialog::ConfirmAutoClaim));
+        let text = render_to_string(&app, 110, 30);
+        for needle in [
+            "Terms of Service",
+            "banned",
+            "MANAGE_GUILD",
+            "separate account",
+            "never bypassed",
+        ] {
+            assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
+        }
+        // n and Esc cancel without sending anything.
+        assert_eq!(app.handle_key(key('n')), None);
+        assert!(app.dialog.is_none());
         app.handle_key(key('m'));
-        assert!(log_texts(&app)[0].contains("stage 4"));
+        assert_eq!(
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            None
+        );
+        assert!(app.dialog.is_none());
+        // Enter does not confirm.
+        app.handle_key(key('m'));
+        assert_eq!(
+            app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            None
+        );
+        assert!(app.dialog.is_some());
+        assert_eq!(
+            app.handle_key(key('y')),
+            Some(Action::Send(EngineCommand::SetAutoClaim { enabled: true }))
+        );
+        assert!(app.dialog.is_none());
+    }
+
+    #[test]
+    fn m_switches_off_without_a_dialog_and_refuses_when_unavailable() {
+        let mut on = app_with_claim(PrecheckState::Ok { note: None }, true);
+        assert_eq!(
+            on.handle_key(key('m')),
+            Some(Action::Send(EngineCommand::SetAutoClaim { enabled: false }))
+        );
+        assert!(on.dialog.is_none());
+
+        for precheck in [
+            PrecheckState::Unavailable {
+                reason: "VG_USER_TOKEN is not set".into(),
+            },
+            PrecheckState::Halted {
+                reason: "token rejected".into(),
+            },
+        ] {
+            let mut app = app_with_claim(precheck, false);
+            assert_eq!(app.handle_key(key('m')), None);
+            assert!(app.dialog.is_none());
+            let last = app.log.lines().last().unwrap();
+            assert_eq!(last.style, LogStyle::Error);
+            assert!(last.text.contains("cannot be enabled"));
+        }
+    }
+
+    #[test]
+    fn header_shows_mode_and_precheck_status() {
+        let mut app = app_with(&["abc"]);
+        assert!(render_to_string(&app, 110, 30).contains("NOTIFY-ONLY"));
+        app.apply_update(update(
+            6,
+            UpdateKind::AutoClaim(ClaimStatus {
+                mode: true,
+                precheck: PrecheckState::Ok { note: None },
+            }),
+        ));
+        let text = render_to_string(&app, 110, 30);
+        assert!(
+            text.contains("AUTO-CLAIM") && text.contains("precheck ok"),
+            "{text}"
+        );
+        app.apply_update(update(
+            7,
+            UpdateKind::AutoClaim(ClaimStatus {
+                mode: true,
+                precheck: PrecheckState::Failed {
+                    reason: "no VANITY_URL".into(),
+                },
+            }),
+        ));
+        let text = render_to_string(&app, 110, 30);
+        assert!(
+            text.contains("INACTIVE") && text.contains("no VANITY_URL"),
+            "{text}"
+        );
     }
 
     #[test]

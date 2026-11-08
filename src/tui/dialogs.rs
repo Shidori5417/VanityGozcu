@@ -1,9 +1,9 @@
-//! Modal dialogs: add target, confirm delete.
+//! Modal dialogs: add target, confirm delete, auto-claim risk confirmation.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
@@ -22,6 +22,8 @@ pub enum Dialog {
     ConfirmDelete {
         code: String,
     },
+    /// Risk confirmation before auto-claim mode is switched on.
+    ConfirmAutoClaim,
 }
 
 /// What a key press did to the open dialog.
@@ -79,6 +81,14 @@ impl Dialog {
                 KeyCode::Char('n' | 'N') | KeyCode::Esc => Outcome::Close,
                 _ => Outcome::Keep,
             },
+            // Deliberately not Enter: this must be an explicit `y`.
+            Dialog::ConfirmAutoClaim => match key.code {
+                KeyCode::Char('y' | 'Y') => {
+                    Outcome::Submit(EngineCommand::SetAutoClaim { enabled: true })
+                }
+                KeyCode::Char('n' | 'N') | KeyCode::Esc => Outcome::Close,
+                _ => Outcome::Keep,
+            },
         }
     }
 }
@@ -125,6 +135,51 @@ pub fn render(frame: &mut Frame, area: Rect, dialog: &Dialog) {
             });
             let block = Block::default().borders(Borders::ALL).title(" Add target ");
             frame.render_widget(Paragraph::new(lines).block(block), rect);
+        }
+        Dialog::ConfirmAutoClaim => {
+            let rect = popup(area, 78, 15);
+            frame.render_widget(Clear, rect);
+            let warn = Style::new().fg(Color::Red).add_modifier(Modifier::BOLD);
+            let lines = vec![
+                Line::styled("Enable AUTO-CLAIM mode?", warn),
+                Line::raw(""),
+                Line::from(vec![
+                    Span::styled("RISK: ", warn),
+                    Span::raw(
+                        "this uses a user token with the Discord API (self-bot), which \
+                         violates the Discord Terms of Service. The account may be banned.",
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Account: ", warn),
+                    Span::raw(
+                        "use a separate account that has MANAGE_GUILD in the target guild, \
+                         not your main account.",
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Verification: ", warn),
+                    Span::raw(
+                        "captcha / 2FA is never bypassed. If Discord asks for it, claiming \
+                         stops and you are notified to act manually.",
+                    ),
+                ]),
+                Line::raw(""),
+                Line::styled(
+                    "y: enable auto-claim   n/Esc: cancel",
+                    Style::new().fg(Color::DarkGray),
+                ),
+            ];
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::new().fg(Color::Red))
+                .title(" Auto-claim - read this first ");
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .wrap(ratatui::widgets::Wrap { trim: true })
+                    .block(block),
+                rect,
+            );
         }
         Dialog::ConfirmDelete { code } => {
             let rect = popup(area, 48, 5);
@@ -213,6 +268,19 @@ mod tests {
         d.handle_key(key(KeyCode::Backspace), &targets);
         assert!(matches!(&d, Dialog::Add { error: None, .. }));
         assert_eq!(d.handle_key(key(KeyCode::Esc), &targets), Outcome::Close);
+    }
+
+    #[test]
+    fn auto_claim_confirmation_needs_an_explicit_y() {
+        let mut d = Dialog::ConfirmAutoClaim;
+        assert_eq!(d.handle_key(key(KeyCode::Enter), &[]), Outcome::Keep);
+        assert_eq!(d.handle_key(key(KeyCode::Char(' ')), &[]), Outcome::Keep);
+        assert_eq!(d.handle_key(key(KeyCode::Esc), &[]), Outcome::Close);
+        assert_eq!(d.handle_key(key(KeyCode::Char('n')), &[]), Outcome::Close);
+        assert_eq!(
+            d.handle_key(key(KeyCode::Char('y')), &[]),
+            Outcome::Submit(EngineCommand::SetAutoClaim { enabled: true })
+        );
     }
 
     #[test]

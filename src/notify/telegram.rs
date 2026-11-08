@@ -54,6 +54,7 @@ impl TelegramNotifier {
             Kind::Success => "\u{2705}",
             Kind::Taken => "\u{26AA}",
             Kind::Warning => "\u{26A0}\u{FE0F}",
+            Kind::Urgent => "\u{1F6A8}",
             Kind::Test => "\u{1F514}",
         };
         let mut text = format!("{icon} <b>{}</b>\n", escape_html(&message.title));

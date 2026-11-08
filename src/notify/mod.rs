@@ -66,6 +66,8 @@ pub enum Kind {
     Taken,
     Success,
     Warning,
+    /// Needs the user right now; sent regardless of the notification flags.
+    Urgent,
     Test,
 }
 
@@ -106,12 +108,21 @@ impl Message {
                 vec![("Reason".to_owned(), reason.clone())],
             ),
             Event::ClaimNeedsVerification { .. } => (
-                format!("Claim of discord.gg/{code} needs manual verification"),
-                Kind::Warning,
-                vec![(
-                    "Action".to_owned(),
-                    "Discord asked for extra verification; claim manually.".to_owned(),
-                )],
+                format!("URGENT: manual action required - discord.gg/{code}"),
+                Kind::Urgent,
+                vec![
+                    (
+                        "Action".to_owned(),
+                        "Manual action required: Discord asked for extra verification (captcha / \
+                         2FA) for the claim. Auto-claim has stopped; claim the URL by hand and \
+                         check your account."
+                            .to_owned(),
+                    ),
+                    (
+                        "Auto-claim".to_owned(),
+                        "halted for this session".to_owned(),
+                    ),
+                ],
             ),
         };
         Self {
@@ -292,9 +303,9 @@ impl Flags {
             Event::BecameFree { .. } => self.on_free,
             Event::BecameTaken { .. } => self.on_taken,
             Event::CheckerDegraded { .. } => self.on_error,
-            Event::ClaimSucceeded { .. }
-            | Event::ClaimFailed { .. }
-            | Event::ClaimNeedsVerification { .. } => self.on_claim,
+            Event::ClaimSucceeded { .. } | Event::ClaimFailed { .. } => self.on_claim,
+            // Needs a human right away: never filtered.
+            Event::ClaimNeedsVerification { .. } => true,
         }
     }
 }
@@ -448,6 +459,25 @@ mod tests {
             guild_name: None
         }));
         assert!(!f.allows(&Event::ClaimSucceeded { code: "a".into() }));
+        assert!(!f.allows(&Event::ClaimFailed {
+            code: "a".into(),
+            reason: "r".into()
+        }));
+        // Verification requests are urgent and bypass every flag.
+        let none = Flags {
+            on_free: false,
+            on_taken: false,
+            on_claim: false,
+            on_error: false,
+        };
+        assert!(none.allows(&Event::ClaimNeedsVerification { code: "a".into() }));
+        let msg = Message::from_record(&EventRecord {
+            event: Event::ClaimNeedsVerification { code: "a".into() },
+            at: SystemTime::UNIX_EPOCH,
+        });
+        assert_eq!(msg.kind, Kind::Urgent);
+        assert!(msg.title.contains("manual action required"));
+        assert!(msg.fields[0].1.contains("Manual action required"));
         assert!(f.allows(&Event::CheckerDegraded {
             code: "a".into(),
             reason: "r".into()

@@ -1,4 +1,5 @@
-//! Comment-preserving edits of the `[[targets]]` list in the config file.
+//! Comment-preserving edits of the config file: the `[[targets]]` list, the
+//! `[auto_claim] enabled` switch and the per-target `auto_claim` flag.
 //!
 //! Only the engine process calls these, so the file has a single writer. Writes go
 //! through a temp file plus rename so a crash never leaves a half-written config.
@@ -6,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
-use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value, value};
 
 #[derive(Debug, Error)]
 pub enum ConfigEditError {
@@ -93,6 +94,39 @@ pub fn remove_target(path: &Path, code: &str) -> Result<(), ConfigEditError> {
         .position(|t| code_of(t).as_deref() == Some(code))
         .ok_or_else(|| ConfigEditError::NotFound(code.to_owned()))?;
     targets.remove(index);
+    save(path, &doc)
+}
+
+/// Sets `key = flag`, keeping the position and any comment of an existing entry.
+fn set_bool(table: &mut dyn toml_edit::TableLike, key: &str, flag: bool) {
+    let mut new = Value::from(flag);
+    if let Some(old) = table.get(key).and_then(Item::as_value) {
+        *new.decor_mut() = old.decor().clone();
+    }
+    table.insert(key, Item::Value(new));
+}
+
+/// Sets `[auto_claim] enabled`, creating the table when missing.
+pub fn set_auto_claim_enabled(path: &Path, enabled: bool) -> Result<(), ConfigEditError> {
+    let mut doc = load(path)?;
+    let section = doc
+        .entry("auto_claim")
+        .or_insert_with(|| Item::Table(Table::new()))
+        .as_table_like_mut()
+        .ok_or(ConfigEditError::UnsupportedShape)?;
+    set_bool(section, "enabled", enabled);
+    save(path, &doc)
+}
+
+/// Sets `auto_claim = flag` on the `[[targets]]` entry for `code`.
+pub fn set_target_auto_claim(path: &Path, code: &str, flag: bool) -> Result<(), ConfigEditError> {
+    let mut doc = load(path)?;
+    let targets = targets_mut(&mut doc)?;
+    let table = targets
+        .iter_mut()
+        .find(|t| code_of(t).as_deref() == Some(code))
+        .ok_or_else(|| ConfigEditError::NotFound(code.to_owned()))?;
+    set_bool(table, "auto_claim", flag);
     save(path, &doc)
 }
 
@@ -196,5 +230,57 @@ code = \"beta\"
             Err(ConfigEditError::UnsupportedShape)
         ));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+    }
+
+    #[test]
+    fn auto_claim_switch_is_created_and_updated_in_place() {
+        let (_dir, path) = write_sample();
+        set_auto_claim_enabled(&path, true).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains("# my watcher") && raw.contains("# first target"),
+            "{raw}"
+        );
+        let doc: DocumentMut = raw.parse().unwrap();
+        assert_eq!(doc["auto_claim"]["enabled"].as_bool(), Some(true));
+        assert_eq!(codes(&path), ["alpha", "beta"]);
+
+        set_auto_claim_enabled(&path, false).unwrap();
+        let doc: DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(doc["auto_claim"]["enabled"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn auto_claim_switch_keeps_neighbours_and_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.toml");
+        let raw = "[auto_claim]\nenabled = false   # deliberately off\ntarget_guild_id = \"1\"\nmax_attempts = 3\n";
+        std::fs::write(&path, raw).unwrap();
+        set_auto_claim_enabled(&path, true).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            out,
+            "[auto_claim]\nenabled = true   # deliberately off\ntarget_guild_id = \"1\"\nmax_attempts = 3\n"
+        );
+    }
+
+    #[test]
+    fn target_auto_claim_flag_is_set_and_replaced() {
+        let (_dir, path) = write_sample();
+        set_target_auto_claim(&path, "beta", false).unwrap();
+        set_target_auto_claim(&path, "alpha", true).unwrap();
+        set_target_auto_claim(&path, "beta", true).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains("# inline note") && raw.contains("# first target"),
+            "{raw}"
+        );
+        let loaded = Config::parse(&raw, Secrets::default()).unwrap();
+        let flags: Vec<_> = loaded.config.targets.iter().map(|t| t.auto_claim).collect();
+        assert_eq!(flags, [Some(true), Some(true)]);
+        assert!(matches!(
+            set_target_auto_claim(&path, "nope", true),
+            Err(ConfigEditError::NotFound(_))
+        ));
     }
 }

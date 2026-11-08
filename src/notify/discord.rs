@@ -10,6 +10,7 @@ use super::{Kind, Message, NotifyError, build_client, post_json};
 const NAME: &str = "discord";
 const COLOR_FREE: u32 = 0x2E_CC_71;
 const COLOR_TAKEN: u32 = 0x95_A5_A6;
+const COLOR_URGENT: u32 = 0xED_42_45;
 const COLOR_WARNING: u32 = 0xE7_4C_3C;
 const COLOR_TEST: u32 = 0x34_98_DB;
 
@@ -40,6 +41,7 @@ impl DiscordNotifier {
             Kind::Free | Kind::Success => COLOR_FREE,
             Kind::Taken => COLOR_TAKEN,
             Kind::Warning => COLOR_WARNING,
+            Kind::Urgent => COLOR_URGENT,
             Kind::Test => COLOR_TEST,
         };
         let mut fields = vec![json!({

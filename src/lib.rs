@@ -4,6 +4,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 pub mod checker;
+pub mod claimer;
 pub mod config;
 pub mod config_edit;
 pub mod engine;

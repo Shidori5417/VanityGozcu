@@ -72,9 +72,8 @@ fn last_result_text_style(kind: Option<ResultKind>) -> (&'static str, Style) {
 
 fn auto_claim_text(flag: Option<bool>) -> &'static str {
     match flag {
-        Some(true) => "yes",
+        Some(true) | None => "yes",
         Some(false) => "no",
-        None => "-",
     }
 }
 
