@@ -1,5 +1,7 @@
 //! Glue between the scheduler output, the state engine, the store and the event bus.
 
+use std::sync::Arc;
+
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
@@ -86,7 +88,7 @@ fn log_result(code: &str, result: &CheckResult, before: &VanityState, after: &Va
 /// Spawns the task that turns bus events into notifications. It ends once the bus
 /// sender is dropped and every pending event has been delivered.
 pub fn spawn_notifier(
-    notifiers: Notifiers,
+    notifiers: Arc<Notifiers>,
     mut rx: broadcast::Receiver<EventRecord>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -115,6 +117,7 @@ mod tests {
             code: code.to_owned(),
             result,
             at: SystemTime::UNIX_EPOCH + Duration::from_secs(100),
+            next_at: SystemTime::UNIX_EPOCH + Duration::from_secs(130),
         }
     }
 

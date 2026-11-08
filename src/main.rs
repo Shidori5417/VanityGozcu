@@ -13,12 +13,14 @@ use tracing_subscriber::{EnvFilter, Layer};
 
 use vanity_gozcu::checker::{Checker, DEFAULT_BASE_URL};
 use vanity_gozcu::config::{Config, Loaded, normalize_code};
+use vanity_gozcu::engine::{Engine, EngineInit};
 use vanity_gozcu::model::CheckResult;
 use vanity_gozcu::notify::{Message, Notifiers};
 use vanity_gozcu::pipeline;
 use vanity_gozcu::ratelimit::RateLimiter;
 use vanity_gozcu::scheduler::{self, SchedulerSettings};
 use vanity_gozcu::store::Store;
+use vanity_gozcu::tui;
 
 /// Max time to let queued notifications drain on shutdown.
 const SHUTDOWN_DRAIN: Duration = Duration::from_secs(10);
@@ -32,7 +34,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Start monitoring (the TUI arrives in a later stage; logs results for now)
+    /// Start monitoring with the interactive terminal UI (logs go to the log dir only)
     Run,
     /// Start monitoring headless (for systemd); also logs to a daily rolling file
     Daemon,
@@ -42,17 +44,20 @@ enum Cmd {
     TestNotify,
 }
 
-/// Logs to stderr and, when `log_dir` is given, to a daily rolling file. The returned
-/// guard must live until exit so buffered lines are flushed.
-fn init_logging(level: &str, log_dir: Option<&Path>) -> Option<WorkerGuard> {
+/// Logs to stderr (unless `stderr` is false, as while the TUI owns the terminal) and,
+/// when `log_dir` is given, to a daily rolling file. The returned guard must live until
+/// exit so buffered lines are flushed.
+fn init_logging(level: &str, log_dir: Option<&Path>, stderr: bool) -> Option<WorkerGuard> {
     let filter = || {
         EnvFilter::try_from_default_env()
             .or_else(|_| EnvFilter::try_new(level))
             .unwrap_or_else(|_| EnvFilter::new("info"))
     };
-    let stderr = tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stderr)
-        .with_filter(filter());
+    let stderr = stderr.then(|| {
+        tracing_subscriber::fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_filter(filter())
+    });
     let (file, guard) = match log_dir {
         Some(dir) => {
             let appender = tracing_appender::rolling::daily(dir, "vanity-gozcu.log");
@@ -91,11 +96,11 @@ async fn real_main() -> Result<ExitCode> {
     let cli = Cli::parse();
     match cli.command {
         Cmd::Run => {
-            monitor(false).await?;
+            monitor(true).await?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Daemon => {
-            monitor(true).await?;
+            monitor(false).await?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Check { code } => check_once(&code).await,
@@ -106,7 +111,7 @@ async fn real_main() -> Result<ExitCode> {
 async fn check_once(raw_code: &str) -> Result<ExitCode> {
     let code = normalize_code(raw_code)?;
     let loaded = load_config()?;
-    let _guard = init_logging(&loaded.config.general.log_level, None);
+    let _guard = init_logging(&loaded.config.general.log_level, None, true);
     for w in &loaded.warnings {
         warn!("{w}");
     }
@@ -126,7 +131,7 @@ async fn check_once(raw_code: &str) -> Result<ExitCode> {
 
 async fn test_notify() -> Result<ExitCode> {
     let loaded = load_config()?;
-    let _guard = init_logging(&loaded.config.general.log_level, None);
+    let _guard = init_logging(&loaded.config.general.log_level, None, true);
     let (notifiers, problems) = Notifiers::from_config(&loaded.config);
     let mut failed = false;
     for p in &problems {
@@ -170,26 +175,27 @@ async fn shutdown_signal() -> Result<()> {
     Ok(())
 }
 
-async fn monitor(daemon: bool) -> Result<()> {
+async fn monitor(tui_mode: bool) -> Result<()> {
     let loaded = load_config()?;
     let config = loaded.config;
-    if daemon {
-        std::fs::create_dir_all(&config.general.log_dir).with_context(|| {
-            format!("cannot create log dir {}", config.general.log_dir.display())
-        })?;
-    }
+    std::fs::create_dir_all(&config.general.log_dir)
+        .with_context(|| format!("cannot create log dir {}", config.general.log_dir.display()))?;
+    // The TUI owns the terminal, so logs go to the file only while it is active.
     let _guard = init_logging(
         &config.general.log_level,
-        daemon.then_some(config.general.log_dir.as_path()),
+        Some(config.general.log_dir.as_path()),
+        !tui_mode,
     );
     match &loaded.source {
         Some(path) => info!("loaded config from {}", path.display()),
         None => info!("no config file found, using defaults"),
     }
-    for w in &loaded.warnings {
+    let mut warnings = loaded.warnings;
+    for w in &warnings {
         warn!("{w}");
     }
-    if config.targets.is_empty() {
+    // The TUI can add targets at runtime; headless mode cannot.
+    if config.targets.is_empty() && !tui_mode {
         bail!("no [[targets]] configured; add at least one to the config file");
     }
     for (code, interval) in config.effective_intervals() {
@@ -202,17 +208,20 @@ async fn monitor(daemon: bool) -> Result<()> {
             config.general.database_path.display()
         )
     })?;
-    let mut engine = pipeline::restore_engine(&store, config.general.confirm_checks).await?;
+    let state = pipeline::restore_engine(&store, config.general.confirm_checks).await?;
 
     let (notifiers, problems) = Notifiers::from_config(&config);
     for p in &problems {
         warn!("notifier disabled: {p}");
+        warnings.push(format!("notifier disabled: {p}"));
     }
     if notifiers.is_empty() {
         warn!("no notifier active; events are only logged and stored");
+        warnings.push("no notifier active; events are only logged and stored".to_owned());
     }
+    let notifiers = Arc::new(notifiers);
     let bus = pipeline::event_bus();
-    let notifier_task = pipeline::spawn_notifier(notifiers, bus.subscribe());
+    let notifier_task = pipeline::spawn_notifier(notifiers.clone(), bus.subscribe());
 
     let checker = Arc::new(Checker::new(DEFAULT_BASE_URL, config.request_timeout())?);
     let limiter = Arc::new(RateLimiter::new(config.ratelimit.max_requests_per_minute));
@@ -221,23 +230,35 @@ async fn monitor(daemon: bool) -> Result<()> {
         jitter_percent: config.general.jitter_percent,
         backoff_max: Duration::from_secs(config.ratelimit.backoff_max_secs),
     };
-    let mut scheduler = scheduler::spawn(settings, checker, limiter, config.targets);
+    let scheduler = scheduler::spawn(settings, checker, limiter, config.targets.clone());
+    let mut engine = Engine::new(EngineInit {
+        state,
+        store: store.clone(),
+        bus: bus.clone(),
+        scheduler,
+        notifiers,
+        targets: config.targets,
+        config_path: Config::resolve_path().0,
+        warnings,
+    });
 
-    let shutdown = shutdown_signal();
-    tokio::pin!(shutdown);
-    let outcome = loop {
-        tokio::select! {
-            event = scheduler.events.recv() => {
-                let Some(event) = event else { break Err(anyhow::anyhow!("scheduler stopped unexpectedly")) };
-                pipeline::process(&mut engine, &store, &bus, &event).await;
-            }
-            signal = &mut shutdown => break signal,
-        }
+    let outcome = if tui_mode {
+        let handle = engine.handle();
+        engine
+            .run(async {
+                tokio::select! {
+                    ui = tui::run(handle) => ui.map_err(anyhow::Error::from),
+                    signal = shutdown_signal() => signal,
+                }
+            })
+            .await
+    } else {
+        engine.run(shutdown_signal()).await
     };
+    let outcome = outcome.map_err(anyhow::Error::from).and_then(|r| r);
 
     info!("shutting down");
-    scheduler.task.abort();
-    drop(scheduler);
+    drop(engine);
     drop(bus);
     if tokio::time::timeout(SHUTDOWN_DRAIN, notifier_task)
         .await

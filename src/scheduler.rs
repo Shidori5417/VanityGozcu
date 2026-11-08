@@ -40,6 +40,8 @@ pub struct CheckEvent {
     pub code: String,
     pub result: CheckResult,
     pub at: SystemTime,
+    /// When the next check is planned (a `CheckNow` may bring it forward).
+    pub next_at: SystemTime,
 }
 
 #[derive(Debug, Clone)]
@@ -178,19 +180,21 @@ async fn run_target(
                 interval
             }
         };
-        let event = CheckEvent {
-            code: target.code.clone(),
-            result: checked.result,
-            at: SystemTime::now(),
-        };
-        if events.send(event).await.is_err() {
-            return;
-        }
         let delay = if delay.is_zero() {
             delay
         } else {
             jittered(delay, ctx.settings.jitter_percent)
         };
+        let at = SystemTime::now();
+        let event = CheckEvent {
+            code: target.code.clone(),
+            result: checked.result,
+            at,
+            next_at: at + delay,
+        };
+        if events.send(event).await.is_err() {
+            return;
+        }
         tokio::select! {
             () = sleep(delay) => {}
             () = wake.notified() => {}

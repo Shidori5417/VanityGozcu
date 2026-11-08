@@ -197,7 +197,7 @@ impl Event {
 }
 
 /// An [`Event`] with the time it was detected; this is what is broadcast.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventRecord {
     pub event: Event,
     pub at: SystemTime,

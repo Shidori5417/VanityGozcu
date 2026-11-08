@@ -251,12 +251,16 @@ impl Config {
     /// Loads `VG_CONFIG` (must exist) or `./config.toml`. When neither is present the
     /// defaults are used so that `check` works without a config.
     pub fn load() -> Result<Loaded, ConfigError> {
-        let secrets = Secrets::from_env();
-        let (path, explicit) = match std::env::var_os(ENV_CONFIG) {
+        let (path, explicit) = Self::resolve_path();
+        Self::load_from(&path, explicit, Secrets::from_env())
+    }
+
+    /// The config path (`VG_CONFIG` or `./config.toml`) and whether it was explicit.
+    pub fn resolve_path() -> (PathBuf, bool) {
+        match std::env::var_os(ENV_CONFIG) {
             Some(p) if !p.is_empty() => (PathBuf::from(p), true),
             _ => (PathBuf::from(DEFAULT_CONFIG_PATH), false),
-        };
-        Self::load_from(&path, explicit, secrets)
+        }
     }
 
     pub fn load_from(
