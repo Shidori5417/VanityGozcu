@@ -27,12 +27,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use thiserror::Error;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use tokio::time::{MissedTickBehavior, interval};
 
+use crate::client::{Client, FeedEvent};
 use crate::engine::{
-    ClaimStatus, CommandReply, EngineCommand, EngineError, EngineHandle, NoticeLevel,
-    PrecheckState, Snapshot, TargetView, Update, UpdateKind,
+    ClaimStatus, CommandReply, EngineCommand, EngineError, NoticeLevel, PrecheckState, Snapshot,
+    TargetView, Update, UpdateKind,
 };
 use dialogs::{Dialog, Outcome};
 use log::{Log, LogStyle};
@@ -338,11 +339,11 @@ impl Drop for TerminalGuard {
 }
 
 /// Runs the UI until the user quits. The terminal is restored on every exit path.
-pub async fn run(handle: EngineHandle) -> Result<(), TuiError> {
+pub async fn run(client: Client) -> Result<(), TuiError> {
     // Subscribe before asking for the snapshot so no update falls in between.
-    let mut updates = handle.subscribe();
+    let mut updates = client.subscribe();
     let mut app = App::new(SystemTime::now());
-    app.apply_snapshot(handle.snapshot().await?);
+    app.apply_snapshot(client.snapshot().await?);
 
     let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
@@ -359,10 +360,10 @@ pub async fn run(handle: EngineHandle) -> Result<(), TuiError> {
                     match app.handle_key(key) {
                         Some(Action::Quit) => return Ok(()),
                         Some(Action::Send(command)) => {
-                            let handle = handle.clone();
+                            let client = client.clone();
                             let reply_tx = reply_tx.clone();
                             tokio::spawn(async move {
-                                let _ = reply_tx.send(handle.request(command).await);
+                                let _ = reply_tx.send(client.request(command).await);
                             });
                         }
                         None => {}
@@ -373,17 +374,25 @@ pub async fn run(handle: EngineHandle) -> Result<(), TuiError> {
                 Some(Err(e)) => return Err(e.into()),
                 None => return Ok(()),
             },
-            update = updates.recv() => match update {
-                Ok(update) => app.apply_update(update),
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    app.apply_snapshot(handle.snapshot().await?);
+            event = updates.recv() => match event {
+                Some(FeedEvent::Update(update)) => app.apply_update(update),
+                Some(FeedEvent::Lagged(n)) => {
+                    app.apply_snapshot(client.snapshot().await?);
                     app.log.push(
                         app.now,
                         LogStyle::Error,
                         format!("UI fell behind, {n} updates skipped; state was reloaded"),
                     );
                 }
-                Err(broadcast::error::RecvError::Closed) => return Err(EngineError::Closed.into()),
+                Some(FeedEvent::Resync(snapshot)) => {
+                    app.apply_snapshot(snapshot);
+                    app.log.push(
+                        app.now,
+                        LogStyle::Error,
+                        "UI fell behind; state was reloaded".to_owned(),
+                    );
+                }
+                None => return Err(EngineError::Closed.into()),
             },
             Some(reply) = replies.recv() => app.apply_reply(reply?),
             _ = tick.tick() => app.now = SystemTime::now(),

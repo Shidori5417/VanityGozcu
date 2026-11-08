@@ -63,6 +63,8 @@ pub struct General {
     pub confirm_checks: u32,
     pub request_timeout_ms: u64,
     pub database_path: PathBuf,
+    /// Unix socket the `daemon` listens on and `attach` connects to.
+    pub socket_path: PathBuf,
     pub log_dir: PathBuf,
     pub log_level: String,
 }
@@ -75,6 +77,7 @@ impl Default for General {
             confirm_checks: 2,
             request_timeout_ms: 5000,
             database_path: PathBuf::from("data/vanity.db"),
+            socket_path: PathBuf::from("data/vanity.sock"),
             log_dir: PathBuf::from("logs"),
             log_level: "info".to_owned(),
         }

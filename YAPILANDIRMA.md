@@ -11,6 +11,7 @@ jitter_percent = 15             # aralığa ±% rastgelelik
 confirm_checks = 2              # "boşaldı" demek için ardışık 404 sayısı
 request_timeout_ms = 5000
 database_path = "data/vanity.db"
+socket_path = "data/vanity.sock"  # daemon dinler, `attach` buraya bağlanır
 log_dir = "logs"
 log_level = "info"              # trace | debug | info | warn | error
 
@@ -59,7 +60,7 @@ auto_claim = false              # sadece bildirim
 | `VG_DISCORD_WEBHOOK` | Discord bildirimi açıksa | Webhook URL'si |
 | `VG_TELEGRAM_TOKEN` | Telegram açıksa | BotFather'dan alınan token |
 | `VG_USER_TOKEN` | Yalnızca auto-claim açıksa | Kullanıcı hesabı token'ı |
-| `VG_CONFIG` | Hayır | Config yolu (varsayılan `./config.toml`) |
+| `VG_CONFIG` | Hayır | Config yolu (varsayılan `./config.toml`); `daemon` ve `attach` aynı config'i görmeli |
 
 systemd için bunlar `EnvironmentFile=/etc/vanity-gozcu/env` (izin `600`) ile verilir.
 
@@ -81,18 +82,24 @@ TUI'de eklenen/silinen hedefler ve mod değişiklikleri `config.toml`'a geri yaz
 [Unit]
 Description=VanityGözcü
 After=network-online.target
+Wants=network-online.target
 
 [Service]
 ExecStart=/opt/vanity-gozcu/vanity-gozcu daemon
 WorkingDirectory=/opt/vanity-gozcu
+Environment=VG_CONFIG=/opt/vanity-gozcu/data/config.toml
 EnvironmentFile=/etc/vanity-gozcu/env
 Restart=on-failure
 RestartSec=5
 User=vanity
 NoNewPrivileges=true
 ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
 ReadWritePaths=/opt/vanity-gozcu/data /opt/vanity-gozcu/logs
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+Motor `config.toml`'u aynı dizinde geçici dosya + `rename` ile yeniden yazdığı için config, yazılabilir `data/` dizininde tutulur (`VG_CONFIG`). Socket (`data/vanity.sock`) ve veritabanı da orada durur. `deploy/install.sh` bunların hepsini kurar.

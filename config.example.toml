@@ -4,6 +4,7 @@ jitter_percent = 15             # aralığa ±% rastgelelik
 confirm_checks = 2              # "boşaldı" demek için ardışık 404 sayısı
 request_timeout_ms = 5000
 database_path = "data/vanity.db"
+socket_path = "data/vanity.sock"  # daemon dinler, `attach` buraya bağlanır
 log_dir = "logs"
 log_level = "info"              # trace | debug | info | warn | error
 

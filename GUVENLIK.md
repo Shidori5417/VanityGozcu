@@ -26,3 +26,4 @@
 - systemd altında ayrı, yetkisiz kullanıcıyla çalışır (`YAPILANDIRMA.md`'deki örnek).
 - `env` dosyası `chmod 600`, sahibi servis kullanıcısı.
 - Bağımlılıklar için `cargo audit` CI'da çalıştırılır.
+- `daemon` socket dosyası `0600` ile oluşur, istemci satırları 64 KiB ile sınırlıdır; socket yalnızca aynı kullanıcıya açıktır.

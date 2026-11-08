@@ -13,6 +13,7 @@ use tracing_subscriber::{EnvFilter, Layer};
 
 use vanity_gozcu::checker::{Checker, DEFAULT_BASE_URL};
 use vanity_gozcu::claimer::Claimer;
+use vanity_gozcu::client::{Client, RemoteClient};
 use vanity_gozcu::config::{Config, ENV_USER_TOKEN, Loaded, normalize_code};
 use vanity_gozcu::engine::{ClaimInit, DEFAULT_RECHECK_DELAY, Engine, EngineInit};
 use vanity_gozcu::model::CheckResult;
@@ -20,6 +21,7 @@ use vanity_gozcu::notify::{Message, Notifiers};
 use vanity_gozcu::pipeline;
 use vanity_gozcu::ratelimit::RateLimiter;
 use vanity_gozcu::scheduler::{self, SchedulerSettings};
+use vanity_gozcu::socket;
 use vanity_gozcu::store::Store;
 use vanity_gozcu::tui;
 
@@ -37,8 +39,11 @@ struct Cli {
 enum Cmd {
     /// Start monitoring with the interactive terminal UI (logs go to the log dir only)
     Run,
-    /// Start monitoring headless (for systemd); also logs to a daily rolling file
+    /// Start monitoring headless (for systemd); also logs to a daily rolling file and
+    /// serves `attach` clients on a Unix socket
     Daemon,
+    /// Open the terminal UI on a running `daemon` through its Unix socket
+    Attach,
     /// Check a single vanity code once and print the classified result
     Check { code: String },
     /// Send a test notification through every enabled notifier
@@ -102,6 +107,10 @@ async fn real_main() -> Result<ExitCode> {
         }
         Cmd::Daemon => {
             monitor(false).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Attach => {
+            attach().await?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Check { code } => check_once(&code).await,
@@ -209,9 +218,37 @@ fn claim_init(config: &Config, limiter: Arc<RateLimiter>) -> ClaimInit {
     init
 }
 
+async fn attach() -> Result<()> {
+    let loaded = load_config()?;
+    let path = &loaded.config.general.socket_path;
+    // The TUI owns the terminal and the daemon keeps the logs, so no logging here.
+    let _guard = init_logging(&loaded.config.general.log_level, None, false);
+    let remote = RemoteClient::connect(path).await.with_context(|| {
+        format!(
+            "cannot reach a daemon on {}; start one with `vanity-gozcu daemon`",
+            path.display()
+        )
+    })?;
+    tui::run(Client::Remote(remote)).await?;
+    Ok(())
+}
+
 async fn monitor(tui_mode: bool) -> Result<()> {
     let loaded = load_config()?;
     let config = loaded.config;
+    let socket_path = config.general.socket_path.clone();
+    // Two engines would both write the config and the database.
+    let listener = if tui_mode {
+        if socket::probe(&socket_path).await {
+            bail!(
+                "a daemon is already running (socket {}); use `vanity-gozcu attach` instead",
+                socket_path.display()
+            );
+        }
+        None
+    } else {
+        Some(socket::bind(&socket_path).await?)
+    };
     std::fs::create_dir_all(&config.general.log_dir)
         .with_context(|| format!("cannot create log dir {}", config.general.log_dir.display()))?;
     // The TUI owns the terminal, so logs go to the file only while it is active.
@@ -228,9 +265,10 @@ async fn monitor(tui_mode: bool) -> Result<()> {
     for w in &warnings {
         warn!("{w}");
     }
-    // The TUI can add targets at runtime; headless mode cannot.
-    if config.targets.is_empty() && !tui_mode {
-        bail!("no [[targets]] configured; add at least one to the config file");
+    // Targets can be added at runtime through the TUI (`run` or `attach`).
+    if config.targets.is_empty() {
+        warn!("no [[targets]] configured; add some with the TUI");
+        warnings.push("no [[targets]] configured; add some with the TUI".to_owned());
     }
     for (code, interval) in config.effective_intervals() {
         info!(%code, interval_secs = interval.as_secs_f64(), "watching");
@@ -282,12 +320,13 @@ async fn monitor(tui_mode: bool) -> Result<()> {
         recheck_delay: DEFAULT_RECHECK_DELAY,
     });
 
+    let server = listener.map(|l| l.serve(engine.handle()));
     let outcome = if tui_mode {
-        let handle = engine.handle();
+        let client = Client::Local(engine.handle());
         engine
             .run(async {
                 tokio::select! {
-                    ui = tui::run(handle) => ui.map_err(anyhow::Error::from),
+                    ui = tui::run(client) => ui.map_err(anyhow::Error::from),
                     signal = shutdown_signal() => signal,
                 }
             })
@@ -298,6 +337,9 @@ async fn monitor(tui_mode: bool) -> Result<()> {
     let outcome = outcome.map_err(anyhow::Error::from).and_then(|r| r);
 
     info!("shutting down");
+    if let Some(server) = server {
+        server.shutdown().await;
+    }
     drop(engine);
     drop(bus);
     if tokio::time::timeout(SHUTDOWN_DRAIN, notifier_task)

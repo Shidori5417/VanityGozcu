@@ -1,16 +1,23 @@
 [Unit]
 Description=VanityGözcü
 After=network-online.target
+Wants=network-online.target
 
 [Service]
 ExecStart=/opt/vanity-gozcu/vanity-gozcu daemon
 WorkingDirectory=/opt/vanity-gozcu
+# The config lives in the writable data dir because the engine rewrites it
+# (temp file + rename in the same directory) when targets change in the TUI.
+Environment=VG_CONFIG=/opt/vanity-gozcu/data/config.toml
 EnvironmentFile=/etc/vanity-gozcu/env
 Restart=on-failure
 RestartSec=5
 User=vanity
 NoNewPrivileges=true
 ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# data: config.toml, vanity.db and vanity.sock; logs: rolling log files.
 ReadWritePaths=/opt/vanity-gozcu/data /opt/vanity-gozcu/logs
 
 [Install]

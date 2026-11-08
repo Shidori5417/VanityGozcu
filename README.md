@@ -8,7 +8,7 @@ Discord vanity URL'lerini (`discord.gg/xxx`) izleyen, boşaldığında Discord w
 - **Bildirim:** URL boşalınca Discord webhook ve Telegram bot mesajı gönderir.
 - **Otomatik alma (opsiyonel, varsayılan KAPALI):** Kullanıcı token'ı ile URL'yi hedef sunucuya atamayı dener.
 - **TUI:** Canlı durum tablosu, olay günlüğü, URL ekleme/çıkarma, mod değiştirme.
-- **Headless mod:** systemd servisi olarak TUI'siz çalışma.
+- **Headless mod:** systemd servisi olarak TUI'siz çalışma; istediğin zaman `attach` ile TUI'ye bağlanma.
 - **Rate limit'e saygı:** Discord'un `Retry-After` ve `X-RateLimit-*` başlıklarına uyar.
 
 ## Önemli uyarı
@@ -24,8 +24,45 @@ cargo build --release
 cp config.example.toml config.toml   # düzenle
 export VG_TELEGRAM_TOKEN=...          # gizli bilgiler env'den okunur
 export VG_DISCORD_WEBHOOK=...
-./target/release/vanity-gozcu run     # TUI ile
-./target/release/vanity-gozcu daemon  # headless (systemd)
+./target/release/vanity-gozcu run     # tek süreç: izleme + TUI
+```
+
+### Komutlar
+
+| Komut | Ne yapar |
+|---|---|
+| `run` | İzlemeyi başlatır ve TUI'yi aynı süreçte açar. Çıkınca izleme de durur. |
+| `daemon` | Başsız (headless) çalışır, günlük dosyasına log yazar ve `socket_path` üzerindeki Unix socket'te `attach` bağlantılarını bekler. |
+| `attach` | Çalışan bir `daemon`'a socket ile bağlanıp TUI açar; `run` ile aynı tuşlar. TUI'den çıkmak daemon'u durdurmaz. |
+| `check <kod>` | Tek bir kodu bir kez kontrol eder. |
+| `test-notify` | Açık bildirim kanallarına test mesajı gönderir. |
+
+`daemon` çalışırken `run` başlatılmaz (iki motor aynı config'e ve veritabanına yazmasın diye); `run` bunu algılayıp `attach` önerir. Socket dosyası `0600` izinlidir, yalnızca aynı kullanıcı bağlanabilir; `daemon` kapanınca silinir. Bağlantı protokolü satır başına bir JSON mesajıdır (istekler `{"id":1,"cmd":"get_snapshot"}` biçimindedir).
+
+### tmux olmadan kullanım
+
+Arka planda süren bir `daemon` ile ekran yöneticisine (tmux/screen) gerek kalmaz:
+
+```bash
+./target/release/vanity-gozcu daemon &   # ya da systemd servisi olarak
+./target/release/vanity-gozcu attach     # istediğin zaman bağlan, `q` ile ayrıl
+```
+
+`attach` ile yaptığın hedef ekleme/silme ve mod değişiklikleri daemon tarafından config'e yazılır.
+
+## VDS'e kurulum
+
+Discord Türkiye'den engelli olduğu için aracın 7/24 çalışacağı makinenin Discord'a erişebildiği bir ülkedeki bir VDS olması gerekir; bunun dışında bir yönlendirme yapılmaz. Linux VDS'te:
+
+```bash
+cargo build --release
+sudo sh deploy/install.sh
+```
+
+Betik `vanity` sistem kullanıcısını, `/opt/vanity-gozcu/{data,logs}` dizinlerini, ikiliyi, örnek config'i (`/opt/vanity-gozcu/data/config.toml`, varsa dokunmaz), boş bir `/etc/vanity-gozcu/env` şablonunu (`600`) ve systemd birimini kurar. Servisi **başlatmaz**; sonraki adımları ekrana yazar: config'i ve `env` dosyasını doldur, `systemctl enable --now vanity-gozcu`, sonra izlemek için:
+
+```bash
+cd /opt/vanity-gozcu && sudo -u vanity env VG_CONFIG=/opt/vanity-gozcu/data/config.toml ./vanity-gozcu attach
 ```
 
 ## Belgeler
