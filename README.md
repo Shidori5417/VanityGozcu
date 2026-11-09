@@ -2,6 +2,10 @@
 
 Discord vanity URL'lerini (`discord.gg/xxx`) izleyen, boşaldığında Discord webhook ve Telegram üzerinden haber veren, istenirse URL'yi kendi sunucuna otomatik almaya çalışan bir Rust aracı. VDS üzerinde 7/24 çalışmak üzere tasarlandı; kontrol ve izleme `ratatui` tabanlı bir TUI ile yapılır.
 
+![VanityGözcü TUI](docs/tui.png)
+
+*TUI görünümü (yerel sahte API ile örnek veriler).*
+
 ## Özellikler
 
 - **İzleme:** En fazla ~20 vanity kodunu düzenli aralıklarla kontrol eder.
