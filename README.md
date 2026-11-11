@@ -1,6 +1,6 @@
 # VanityGözcü
 
-Discord vanity URL'lerini (`discord.gg/xxx`) izleyen, boşaldığında Discord webhook ve Telegram üzerinden haber veren, istenirse URL'yi kendi sunucuna otomatik almaya çalışan bir Rust aracı. VDS üzerinde 7/24 çalışmak üzere tasarlandı; kontrol ve izleme `ratatui` tabanlı bir TUI ile yapılır.
+Discord vanity URL'lerini (`discord.gg/xxx`) izleyen Rust aracı. URL boşalınca Discord webhook ve Telegram üzerinden bildirim gönderir; isteğe bağlı olarak URL'yi kendi sunucuna almayı dener. `ratatui` tabanlı TUI ile yönetilir, systemd servisi olarak headless çalışabilir.
 
 ![VanityGözcü TUI](docs/tui.png)
 
@@ -8,73 +8,82 @@ Discord vanity URL'lerini (`discord.gg/xxx`) izleyen, boşaldığında Discord w
 
 ## Özellikler
 
-- **İzleme:** En fazla ~20 vanity kodunu düzenli aralıklarla kontrol eder.
-- **Bildirim:** URL boşalınca Discord webhook ve Telegram bot mesajı gönderir.
-- **Otomatik alma (opsiyonel, varsayılan KAPALI):** Kullanıcı token'ı ile URL'yi hedef sunucuya atamayı dener.
-- **TUI:** Canlı durum tablosu, olay günlüğü, URL ekleme/çıkarma, mod değiştirme.
-- **Headless mod:** systemd servisi olarak TUI'siz çalışma; istediğin zaman `attach` ile TUI'ye bağlanma.
-- **Rate limit'e saygı:** Discord'un `Retry-After` ve `X-RateLimit-*` başlıklarına uyar.
+- **İzleme:** Önerilen en fazla 25 vanity kodunu düzenli aralıklarla kontrol eder.
+- **Bildirim:** URL boşalınca Discord webhook ve/veya Telegram mesajı.
+- **Otomatik alma (opsiyonel, varsayılan kapalı):** Kullanıcı token'ıyla URL'yi hedef sunucuya atamayı dener.
+- **TUI:** Durum tablosu, olay günlüğü, hedef ekleme/çıkarma, mod değiştirme.
+- **Headless mod:** `daemon` olarak systemd servisi şeklinde çalışır; `attach` ile TUI'ye bağlanılır.
+- **Rate limit:** Discord'un `Retry-After` ve `X-RateLimit-*` başlıklarına uyar.
 
 ## Önemli uyarı
 
-Bildirim modu token gerektirmez ve Discord kurallarıyla sorun yaratmaz.
+Bildirim modu kullanıcı hesabı token'ı gerektirmez.
 
-Otomatik alma modu **kullanıcı hesabı token'ı** gerektirir. Kullanıcı hesabını otomasyonla kullanmak (self-bot) Discord Hizmet Şartları'na aykırıdır ve hesabın kapatılmasına yol açabilir. Bu mod bilerek açılmalı; mümkünse ana hesap yerine bu riski kabul ettiğin bir hesap kullan. Araç MFA / captcha gibi doğrulamaları **atlatmaya çalışmaz**; böyle bir adım istenirse durur ve bildirim atar.
+Otomatik alma modu **kullanıcı hesabı token'ı** kullanır. Kullanıcı hesabını otomasyonla kullanmak (self-bot) Discord Hizmet Şartları'na aykırıdır ve hesabın kapatılmasına yol açabilir. Bu modu bilerek aç; mümkünse ana hesap yerine riski kabul ettiğin bir hesap kullan. Araç MFA veya captcha doğrulamalarını **aşmaya çalışmaz**; böyle bir istekte durur ve bildirim gönderir.
 
 ## Hızlı başlangıç
 
 ```bash
 cargo build --release
-cp config.example.toml config.toml   # düzenle
-export VG_TELEGRAM_TOKEN=...          # gizli bilgiler env'den okunur
+cp config.example.toml config.toml        # düzenle
+export VG_TELEGRAM_TOKEN=...               # gizli bilgiler ortam değişkeninden okunur
 export VG_DISCORD_WEBHOOK=...
-./target/release/vanity-gozcu run     # tek süreç: izleme + TUI
+./target/release/vanity-gozcu run          # izleme + TUI tek süreçte
 ```
 
-### Komutlar
+Otomatik alma için ayrıca `VG_USER_TOKEN` ve config'de `[auto_claim]` ayarları gerekir.
+
+## Komutlar
 
 | Komut | Ne yapar |
 |---|---|
 | `run` | İzlemeyi başlatır ve TUI'yi aynı süreçte açar. Çıkınca izleme de durur. |
-| `daemon` | Başsız (headless) çalışır, günlük dosyasına log yazar ve `socket_path` üzerindeki Unix socket'te `attach` bağlantılarını bekler. |
-| `attach` | Çalışan bir `daemon`'a socket ile bağlanıp TUI açar; `run` ile aynı tuşlar. TUI'den çıkmak daemon'u durdurmaz. |
-| `check <kod>` | Tek bir kodu bir kez kontrol eder. |
-| `test-notify` | Açık bildirim kanallarına test mesajı gönderir. |
+| `daemon` | TUI'siz çalışır, günlük dosyasına yazar ve `socket_path` üzerinde `attach` bağlantılarını bekler. |
+| `attach` | Çalışan bir `daemon`'a bağlanıp TUI açar. TUI'den çıkmak daemon'ı durdurmaz. |
+| `check <kod>` | Tek bir kodu bir kez kontrol edip sonucunu yazdırır. |
+| `test-notify` | Etkin bildirim kanallarına test mesajı gönderir. |
 
-`daemon` çalışırken `run` başlatılmaz (iki motor aynı config'e ve veritabanına yazmasın diye); `run` bunu algılayıp `attach` önerir. Socket dosyası `0600` izinlidir, yalnızca aynı kullanıcı bağlanabilir; `daemon` kapanınca silinir. Bağlantı protokolü satır başına bir JSON mesajıdır (istekler `{"id":1,"cmd":"get_snapshot"}` biçimindedir).
+Bir `daemon` çalışırken `run` başlamaz (iki motor aynı config ve veritabanına yazmasın diye); `attach` kullanmanız söylenir.
 
-### tmux olmadan kullanım
+Socket dosyası `0600` izinlidir, yalnızca aynı kullanıcı bağlanabilir ve daemon kapanınca silinir. Protokol satır başına bir JSON mesajıdır, örnek: `{"id":1,"cmd":"get_snapshot"}`.
 
-Arka planda süren bir `daemon` ile ekran yöneticisine (tmux/screen) gerek kalmaz:
+### Arka planda çalıştırma (tmux gerekmez)
 
 ```bash
-./target/release/vanity-gozcu daemon &   # ya da systemd servisi olarak
-./target/release/vanity-gozcu attach     # istediğin zaman bağlan, `q` ile ayrıl
+./target/release/vanity-gozcu daemon &
+./target/release/vanity-gozcu attach      # istediğin zaman bağlan, q ile ayrıl
 ```
 
-`attach` ile yaptığın hedef ekleme/silme ve mod değişiklikleri daemon tarafından config'e yazılır.
+`attach` ile yapılan hedef ekleme/silme ve mod değişiklikleri daemon tarafından config'e yazılır.
 
 ## VDS'e kurulum
 
-Discord Türkiye'den engelli olduğu için aracın 7/24 çalışacağı makinenin Discord'a erişebildiği bir ülkedeki bir VDS olması gerekir; bunun dışında bir yönlendirme yapılmaz. Linux VDS'te:
+Aracın Discord'a erişebildiği bir ülkede bir Linux VDS seçin. Kurulum betiği systemd servisini kurar:
 
 ```bash
 cargo build --release
 sudo sh deploy/install.sh
 ```
 
-Betik `vanity` sistem kullanıcısını, `/opt/vanity-gozcu/{data,logs}` dizinlerini, ikiliyi, örnek config'i (`/opt/vanity-gozcu/data/config.toml`, varsa dokunmaz), boş bir `/etc/vanity-gozcu/env` şablonunu (`600`) ve systemd birimini kurar. Servisi **başlatmaz**; sonraki adımları ekrana yazar: config'i ve `env` dosyasını doldur, `systemctl enable --now vanity-gozcu`, sonra izlemek için:
+Betik `vanity` sistem kullanıcısını, `/opt/vanity-gozcu/{data,logs}` dizinlerini, ikiliyi, örnek config'i (`data/config.toml`, varsa dokunmaz), boş bir `/etc/vanity-gozcu/env` şablonunu (mod `600`) ve systemd birimini kurar. Servisi **başlatmaz**. Ardından:
+
+1. `/opt/vanity-gozcu/data/config.toml` dosyasını düzenleyin (hedefler, bildirim kanalları).
+2. `/etc/vanity-gozcu/env` dosyasına gizli bilgileri yazın.
+3. `systemctl enable --now vanity-gozcu`
+4. Canlı izleme:
 
 ```bash
 cd /opt/vanity-gozcu && sudo -u vanity env VG_CONFIG=/opt/vanity-gozcu/data/config.toml ./vanity-gozcu attach
 ```
 
+Loglar: `journalctl -u vanity-gozcu -f` ve `/opt/vanity-gozcu/logs/`.
+
 ## Belgeler
 
 | Dosya | İçerik |
 |---|---|
-| [MIMARI.md](MIMARI.md) | Modüller, veri akışı, durum makinesi, crate seçimleri |
+| [MIMARI.md](MIMARI.md) | Modüller, veri akışı, durum makinesi |
 | [YAPILANDIRMA.md](YAPILANDIRMA.md) | `config.toml` alanları ve ortam değişkenleri |
 | [GUVENLIK.md](GUVENLIK.md) | Token yönetimi, loglama, risk sınırları |
-| [YOL_HARITASI.md](YOL_HARITASI.md) | Aşama aşama geliştirme planı |
-| [PROMPT.md](PROMPT.md) | Projeyi bir AI kod asistanına yazdırmak için hazır prompt |
+| [YOL_HARITASI.md](YOL_HARITASI.md) | Geliştirme planı |
+| [PROMPT.md](PROMPT.md) | Projeyi bir AI kod asistanına yazdırmak için prompt |
