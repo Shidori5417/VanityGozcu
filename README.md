@@ -87,3 +87,7 @@ Loglar: `journalctl -u vanity-gozcu -f` ve `/opt/vanity-gozcu/logs/`.
 | [GUVENLIK.md](GUVENLIK.md) | Token yönetimi, loglama, risk sınırları |
 | [YOL_HARITASI.md](YOL_HARITASI.md) | Geliştirme planı |
 | [PROMPT.md](PROMPT.md) | Projeyi bir AI kod asistanına yazdırmak için prompt |
+
+## Lisans
+
+[MIT](LICENSE)
