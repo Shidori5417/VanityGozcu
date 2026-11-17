@@ -274,7 +274,11 @@ async fn monitor(tui_mode: bool) -> Result<()> {
         info!(%code, interval_secs = interval.as_secs_f64(), "watching");
     }
 
-    let store = Store::open(&config.general.database_path).with_context(|| {
+    let store = Store::open_with_retention(
+        &config.general.database_path,
+        config.general.event_retention(),
+    )
+    .with_context(|| {
         format!(
             "cannot open database {}",
             config.general.database_path.display()

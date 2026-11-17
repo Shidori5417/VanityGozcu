@@ -14,6 +14,8 @@ database_path = "data/vanity.db"
 socket_path = "data/vanity.sock"  # daemon dinler, `attach` buraya bağlanır
 log_dir = "logs"
 log_level = "info"              # trace | debug | info | warn | error
+event_retention_days = 30       # bu günden eski olay kayıtları silinir (0 = sınırsız)
+max_events = 50000              # tutulacak en fazla olay kaydı (0 = sınırsız)
 
 [ratelimit]
 max_requests_per_minute = 40    # tüm hedefler için ortak bütçe
