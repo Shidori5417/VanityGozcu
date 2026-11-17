@@ -18,6 +18,7 @@ use std::io;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,9 @@ const MAX_CLIENTS: usize = 16;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long to wait for a socket to answer when probing it.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Makes the temporary bind names unique even when several binds happen in one process.
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Error)]
 pub enum SocketError {
@@ -178,21 +182,27 @@ pub async fn bind(path: &Path) -> Result<SocketListener, SocketError> {
         Err(e) => return Err(io_err(path)(e)),
     }
 
-    // Bind under a private name, restrict it, then move it into place so the final
-    // path never exists with looser permissions.
+    // Bind under a private, unique name and restrict it. The final path is created
+    // with `hard_link`, which fails atomically if another process won the race, so
+    // two daemons can never replace each other's socket.
     let mut tmp_name = path.file_name().unwrap_or_default().to_owned();
-    tmp_name.push(format!(".{}.tmp", std::process::id()));
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    tmp_name.push(format!(".{}.{seq}.tmp", std::process::id()));
     let tmp = path.with_file_name(tmp_name);
     let _ = tokio::fs::remove_file(&tmp).await;
     let listener = UnixListener::bind(&tmp).map_err(io_err(&tmp))?;
     let placed = async {
         tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await?;
-        tokio::fs::rename(&tmp, path).await
+        tokio::fs::hard_link(&tmp, path).await
     }
     .await;
+    let _ = tokio::fs::remove_file(&tmp).await;
     if let Err(e) = placed {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return Err(io_err(path)(e));
+        return Err(match e.kind() {
+            // Another bind linked its socket into place after our stale-socket check.
+            io::ErrorKind::AlreadyExists => SocketError::AlreadyRunning(path.to_owned()),
+            _ => io_err(path)(e),
+        });
     }
     Ok(SocketListener {
         listener,
@@ -569,6 +579,21 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_binds_have_exactly_one_winner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vanity.sock");
+        let (a, b) = tokio::join!(bind(&path), bind(&path));
+        assert!(
+            a.is_ok() ^ b.is_ok(),
+            "tam bir bind kazanmalı: a={a:?}, b={b:?}"
+        );
+        assert!(probe(&path).await);
+        drop(a);
+        drop(b);
+        assert!(!path.exists(), "kazanan socket kapanınca temizlenmeli");
     }
 
     #[tokio::test]
