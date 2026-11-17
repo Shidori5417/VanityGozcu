@@ -4,6 +4,7 @@
 //! codes, states and [`Event`]s.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -61,9 +62,43 @@ pub struct StoredState {
     pub updated_at: SystemTime,
 }
 
+/// Event-log retention: delete rows older than `days` and keep at most
+/// `max_events` rows. `0` disables the corresponding limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retention {
+    pub days: u64,
+    pub max_events: u64,
+}
+
+impl Default for Retention {
+    fn default() -> Self {
+        Self {
+            days: 30,
+            max_events: 50_000,
+        }
+    }
+}
+
+impl Retention {
+    /// No limits; used by in-memory stores so tests keep their fixtures.
+    pub const UNLIMITED: Self = Self {
+        days: 0,
+        max_events: 0,
+    };
+
+    fn enabled(self) -> bool {
+        self.days > 0 || self.max_events > 0
+    }
+}
+
+/// How many event writes between automatic retention passes.
+const PRUNE_EVERY_WRITES: u64 = 256;
+
 #[derive(Debug, Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
+    retention: Retention,
+    writes: Arc<AtomicU64>,
 }
 
 fn to_secs(t: SystemTime) -> i64 {
@@ -75,27 +110,78 @@ fn from_secs(s: i64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(u64::try_from(s).unwrap_or(0))
 }
 
+/// Deletes events outside the retention window and returns how many rows went away.
+fn prune(conn: &Connection, retention: Retention) -> Result<usize, StoreError> {
+    let mut removed = 0;
+    if retention.days > 0 {
+        let max_age = i64::try_from(retention.days.saturating_mul(86_400)).unwrap_or(i64::MAX);
+        let cutoff = to_secs(SystemTime::now()).saturating_sub(max_age);
+        removed += conn.execute("DELETE FROM events WHERE at < ?1", [cutoff])?;
+    }
+    if retention.max_events > 0 {
+        let keep = i64::try_from(retention.max_events).unwrap_or(i64::MAX);
+        removed += conn.execute(
+            "DELETE FROM events WHERE id NOT IN
+             (SELECT id FROM events ORDER BY id DESC LIMIT ?1)",
+            [keep],
+        )?;
+    }
+    Ok(removed)
+}
+
+/// Counts an event write and runs retention every [`PRUNE_EVERY_WRITES`] calls.
+fn maybe_prune(
+    conn: &mut Connection,
+    retention: Retention,
+    writes: &AtomicU64,
+) -> Result<(), StoreError> {
+    if !retention.enabled() {
+        return Ok(());
+    }
+    let n = writes.fetch_add(1, Ordering::Relaxed) + 1;
+    if n.is_multiple_of(PRUNE_EVERY_WRITES) {
+        prune(conn, retention)?;
+    }
+    Ok(())
+}
+
 impl Store {
     /// Opens (creating parent directories and tables as needed) the database at `path`.
+    /// Uses [`Retention::UNLIMITED`]; the daemon calls [`Store::open_with_retention`].
     pub fn open(path: &Path) -> Result<Self, StoreError> {
+        Self::open_with_retention(path, Retention::UNLIMITED)
+    }
+
+    /// Opens the database and immediately applies `retention`.
+    pub fn open_with_retention(path: &Path, retention: Retention) -> Result<Self, StoreError> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).map_err(|source| StoreError::CreateDir {
                 path: parent.to_owned(),
                 source,
             })?;
         }
-        Self::init(Connection::open(path)?)
+        Self::init(Connection::open(path)?, retention)
     }
 
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?, Retention::UNLIMITED)
     }
 
-    fn init(conn: Connection) -> Result<Self, StoreError> {
+    fn init(conn: Connection, retention: Retention) -> Result<Self, StoreError> {
         conn.execute_batch(SCHEMA)?;
+        prune(&conn, retention)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            retention,
+            writes: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Applies the configured retention now (called on startup and periodically while
+    /// writing). Returns the number of deleted event rows.
+    pub async fn prune(&self) -> Result<usize, StoreError> {
+        let retention = self.retention;
+        self.blocking(move |conn| prune(conn, retention)).await
     }
 
     fn lock(conn: &Mutex<Connection>) -> Result<MutexGuard<'_, Connection>, StoreError> {
@@ -149,6 +235,7 @@ impl Store {
     ) -> Result<(), StoreError> {
         let code = code.to_owned();
         let state = serde_json::to_string(state)?;
+        let has_event = event.is_some();
         let event = event
             .map(|(e, at)| -> Result<_, StoreError> {
                 Ok((
@@ -159,6 +246,8 @@ impl Store {
                 ))
             })
             .transpose()?;
+        let retention = self.retention;
+        let writes = Arc::clone(&self.writes);
         self.blocking(move |conn| {
             let tx = conn.transaction()?;
             tx.execute(
@@ -174,6 +263,9 @@ impl Store {
                 )?;
             }
             tx.commit()?;
+            if has_event {
+                maybe_prune(conn, retention, &writes)?;
+            }
             Ok(())
         })
         .await
@@ -184,11 +276,14 @@ impl Store {
         let code = event.code().to_owned();
         let kind = event.kind();
         let payload = serde_json::to_string(event)?;
+        let retention = self.retention;
+        let writes = Arc::clone(&self.writes);
         self.blocking(move |conn| {
             conn.execute(
                 "INSERT INTO events (code, kind, payload, at) VALUES (?1, ?2, ?3, ?4)",
                 params![code, kind, payload, to_secs(at)],
             )?;
+            maybe_prune(conn, retention, &writes)?;
             Ok(())
         })
         .await
@@ -296,6 +391,67 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event.code(), "c2");
         assert_eq!(events[1].event.code(), "c1");
+    }
+
+    #[tokio::test]
+    async fn retention_removes_old_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("retention.db");
+        let store = Store::open_with_retention(
+            &path,
+            Retention {
+                days: 1,
+                max_events: 0,
+            },
+        )
+        .unwrap();
+        let old = SystemTime::now() - Duration::from_secs(2 * 86_400);
+        for (code, at) in [("old", old), ("new", SystemTime::now())] {
+            store
+                .append_event(
+                    &Event::CheckerDegraded {
+                        code: code.into(),
+                        reason: "x".into(),
+                    },
+                    at,
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(store.prune().await.unwrap(), 1);
+        let events = store.recent_events(10).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event.code(), "new");
+    }
+
+    #[tokio::test]
+    async fn retention_keeps_only_the_newest_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("retention-cap.db");
+        let store = Store::open_with_retention(
+            &path,
+            Retention {
+                days: 0,
+                max_events: 3,
+            },
+        )
+        .unwrap();
+        for i in 0..5 {
+            store
+                .append_event(
+                    &Event::CheckerDegraded {
+                        code: format!("c{i}"),
+                        reason: "x".into(),
+                    },
+                    t(u64::try_from(i).unwrap()),
+                )
+                .await
+                .unwrap();
+        }
+        store.prune().await.unwrap();
+        let events = store.recent_events(10).await.unwrap();
+        let codes: Vec<_> = events.iter().map(|e| e.event.code()).collect();
+        assert_eq!(codes, ["c4", "c3", "c2"]);
     }
 
     #[tokio::test]
