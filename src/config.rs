@@ -67,6 +67,10 @@ pub struct General {
     pub socket_path: PathBuf,
     pub log_dir: PathBuf,
     pub log_level: String,
+    /// Event rows older than this many days are deleted (0 disables the age limit).
+    pub event_retention_days: u64,
+    /// Most recent event rows to keep (0 disables the row-count limit).
+    pub max_events: u64,
 }
 
 impl Default for General {
@@ -80,6 +84,19 @@ impl Default for General {
             socket_path: PathBuf::from("data/vanity.sock"),
             log_dir: PathBuf::from("logs"),
             log_level: "info".to_owned(),
+            event_retention_days: 30,
+            max_events: 50_000,
+        }
+    }
+}
+
+impl General {
+    /// Event log pruning settings for the store.
+    #[must_use]
+    pub fn event_retention(&self) -> crate::store::Retention {
+        crate::store::Retention {
+            days: self.event_retention_days,
+            max_events: self.max_events,
         }
     }
 }
