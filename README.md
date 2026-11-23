@@ -1,5 +1,8 @@
 # VanityGözcü
 
+[![CI](https://github.com/Shidori5417/VanityGozcu/actions/workflows/ci.yml/badge.svg)](https://github.com/Shidori5417/VanityGozcu/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Discord vanity URL'lerini (`discord.gg/xxx`) izleyen Rust aracı. URL boşalınca Discord webhook ve Telegram üzerinden bildirim gönderir; isteğe bağlı olarak URL'yi kendi sunucuna almayı dener. `ratatui` tabanlı TUI ile yönetilir, systemd servisi olarak headless çalışabilir.
 
 ![VanityGözcü TUI](docs/tui.png)
@@ -24,6 +27,7 @@ Otomatik alma modu **kullanıcı hesabı token'ı** kullanır. Kullanıcı hesab
 ## Hızlı başlangıç
 
 ```bash
+# veya doğrudan kurulum: cargo install --git https://github.com/Shidori5417/VanityGozcu
 cargo build --release
 cp config.example.toml config.toml        # düzenle
 export VG_TELEGRAM_TOKEN=...               # gizli bilgiler ortam değişkeninden okunur
