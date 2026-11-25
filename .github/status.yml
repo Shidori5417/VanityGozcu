@@ -1,0 +1,7 @@
+# Read by github.com/Shidori5417 (profile README) and the portfolio site.
+# Edit when the project's state changes; no need to touch it otherwise.
+# status: active | prototype | released | maintenance | paused | archived
+status: maintenance
+focus:
+  en: "Fixed a Unix socket race and added SQLite event retention."
+  tr: "Unix socket yarışı düzeltildi, SQLite olay saklama süresi eklendi."
