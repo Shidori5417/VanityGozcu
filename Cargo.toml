@@ -3,6 +3,10 @@ name = "vanity_gozcu"
 version = "0.1.0"
 license = "MIT"
 edition = "2024"
+rust-version = "1.88"
+description = "Discord vanity URL izleme ve isteğe bağlı otomatik alma aracı (TUI + daemon)"
+repository = "https://github.com/Shidori5417/VanityGozcu"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1.0.104"
