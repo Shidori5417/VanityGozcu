@@ -184,19 +184,42 @@ pub async fn bind(path: &Path) -> Result<SocketListener, SocketError> {
 
     // Bind under a private, unique name and restrict it. The final path is created
     // with `hard_link`, which fails atomically if another process won the race, so
-    // two daemons can never replace each other's socket.
-    let mut tmp_name = path.file_name().unwrap_or_default().to_owned();
+    // two daemons can never replace each other's socket. Keep the temp name short
+    // so it fits within `SUN_LEN`, falling back to a private dir under `/tmp` if the
+    // parent path alone is near the limit.
     let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    tmp_name.push(format!(".{}.{seq}.tmp", std::process::id()));
-    let tmp = path.with_file_name(tmp_name);
-    let _ = tokio::fs::remove_file(&tmp).await;
-    let listener = UnixListener::bind(&tmp).map_err(io_err(&tmp))?;
+    let short_name = format!(".{:x}.{seq:x}", std::process::id());
+    let local_tmp = path.with_file_name(short_name);
+    let _ = tokio::fs::remove_file(&local_tmp).await;
+    let (listener, tmp, fallback_dir) = match UnixListener::bind(&local_tmp) {
+        Ok(listener) => (listener, local_tmp, None),
+        Err(e) if e.kind() == io::ErrorKind::InvalidInput => {
+            let fallback_dir = PathBuf::from(format!("/tmp/.vg-{:x}-{seq:x}", std::process::id()));
+            let _ = tokio::fs::remove_dir_all(&fallback_dir).await;
+            tokio::fs::create_dir_all(&fallback_dir)
+                .await
+                .map_err(io_err(&fallback_dir))?;
+            tokio::fs::set_permissions(&fallback_dir, std::fs::Permissions::from_mode(0o700))
+                .await
+                .map_err(io_err(&fallback_dir))?;
+            let fallback_tmp = fallback_dir.join("s");
+            let listener = UnixListener::bind(&fallback_tmp).map_err(|bind_err| {
+                let _ = std::fs::remove_dir_all(&fallback_dir);
+                io_err(&fallback_tmp)(bind_err)
+            })?;
+            (listener, fallback_tmp, Some(fallback_dir))
+        }
+        Err(e) => return Err(io_err(&local_tmp)(e)),
+    };
     let placed = async {
         tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await?;
         tokio::fs::hard_link(&tmp, path).await
     }
     .await;
     let _ = tokio::fs::remove_file(&tmp).await;
+    if let Some(dir) = fallback_dir {
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
     if let Err(e) = placed {
         return Err(match e.kind() {
             // Another bind linked its socket into place after our stale-socket check.
@@ -387,10 +410,28 @@ pub(crate) mod tests {
         }
     }
 
+    /// Creates a temp dir whose `sock/vanity.sock` fits within `SUN_LEN` (108 bytes),
+    /// falling back to `/tmp` when `TMPDIR` is too long.
+    pub(crate) fn socket_tempdir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        if dir
+            .path()
+            .join("sock")
+            .join("vanity.sock")
+            .as_os_str()
+            .len()
+            < 95
+        {
+            dir
+        } else {
+            tempfile::tempdir_in("/tmp").unwrap()
+        }
+    }
+
     /// A real engine (checks fail fast against a closed port) behind a socket in a
     /// temp dir.
     pub(crate) async fn fixture() -> Fixture {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = socket_tempdir();
         let socket = dir.path().join("sock").join("vanity.sock");
         let config = dir.path().join("config.toml");
         std::fs::write(&config, "[general]\nlog_level = \"info\"\n").unwrap();
@@ -583,7 +624,7 @@ pub(crate) mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_binds_have_exactly_one_winner() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = socket_tempdir();
         let path = dir.path().join("vanity.sock");
         let (a, b) = tokio::join!(bind(&path), bind(&path));
         assert!(
@@ -625,10 +666,24 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn regular_files_are_never_removed() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = socket_tempdir();
         let path = dir.path().join("vanity.sock");
         std::fs::write(&path, "precious").unwrap();
         assert!(matches!(bind(&path).await, Err(SocketError::NotASocket(_))));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "precious");
+    }
+
+    #[tokio::test]
+    async fn bind_works_near_sun_len_limit() {
+        let base = tempfile::tempdir_in("/tmp").unwrap();
+        let nested = base.path().join("a".repeat(72));
+        let path = nested.join("vanity.sock");
+        // Path is ~98 bytes: valid for SUN_LEN (108), whereas the old `.{pid}.{seq}.tmp`
+        // suffix would push it past 108 bytes.
+        assert!(path.as_os_str().len() > 92 && path.as_os_str().len() < 107);
+        let listener = bind(&path).await.unwrap();
+        assert!(probe(&path).await);
+        drop(listener);
+        assert!(!path.exists());
     }
 }

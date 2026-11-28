@@ -34,14 +34,20 @@ Tüm bileşenler tek binary içinde, `tokio` runtime üzerinde ayrı task'lar ol
 
 ```
 src/
-├── main.rs            # clap CLI: run | daemon | check <code> | test-notify
+├── lib.rs             # kütüphane kökü ve dışa aktarılan modüller
+├── main.rs            # clap CLI: run | daemon | attach | check <code> | test-notify
 ├── config.rs          # TOML + env yükleme, doğrulama
+├── config_edit.rs     # TUI/attach komutlarından config.toml güncelleme
 ├── model.rs           # VanityTarget, VanityState, Event, CheckResult
+├── pipeline.rs        # engine olay yayın kanalı (broadcast)
+├── engine.rs          # merkezi çalışma motoru ve komut işleme
 ├── scheduler.rs       # interval + jitter, URL başına zamanlama
 ├── checker.rs         # invite endpoint isteği, yanıt sınıflandırma
 ├── ratelimit.rs       # global + bucket bazlı limit takibi
 ├── state.rs           # durum makinesi, geçiş tespiti, kalıcı durum
 ├── claimer.rs         # opsiyonel otomatik alma
+├── socket.rs          # daemon Unix socket sunucusu (JSON-line protokolü)
+├── client.rs          # yerel ve uzak (Unix socket) engine istemcisi
 ├── notify/
 │   ├── mod.rs         # Notifier trait, fan-out
 │   ├── discord.rs     # webhook (embed)
@@ -106,8 +112,8 @@ Gereksinim: hedef sunucuda vanity özelliği (Boost seviye 3 veya Discord'un ver
 
 - **Ana tablo:** kod, durum, son kontrol, sonraki kontrol, sahip sunucu adı, otomatik alma aktif mi.
 - **Alt panel:** olay günlüğü (renkli: boşaldı = yeşil, hata = kırmızı).
-- **Kısayollar:** `a` ekle, `d` sil, `c` şimdi kontrol et, `m` modu değiştir (bildirim / otomatik alma, onay penceresiyle), `t` test bildirimi, `q` çıkış.
-- VDS'te `tmux` içinde çalıştırılır. İleri aşamada: `daemon` + TUI'nin Unix socket ile bağlanması (YOL_HARITASI aşama 5).
+- **Kısayollar:** `a` ekle, `d` sil, `c` şimdi kontrol et, `x` / `Space` hedef otomatik alma aç/kapat, `m` modu değiştir (bildirim / otomatik alma, onay penceresiyle), `t` test bildirimi, `↑`/`k`, `↓`/`j`, `Home`/`g`, `End`/`G`, `PgUp`/`PgDn` gezinme, `q` / `Ctrl-C` çıkış.
+- `daemon` arka planda çalışırken `attach` alt komutu `socket_path` Unix socket'i üzerinden bağlanır (`0600` izinli, JSON satır protokolü).
 
 ## Crate seçimleri
 

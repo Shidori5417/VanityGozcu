@@ -60,6 +60,21 @@ Socket dosyası `0600` izinlidir, yalnızca aynı kullanıcı bağlanabilir ve d
 
 `attach` ile yapılan hedef ekleme/silme ve mod değişiklikleri daemon tarafından config'e yazılır.
 
+### TUI kısayolları
+
+| Tuş | İşlev |
+|---|---|
+| `a` | Yeni vanity kodu ekle |
+| `d` | Seçili hedefi sil (onay penceresiyle) |
+| `c` | Seçili hedefi hemen kontrol et |
+| `x` / `Space` | Seçili hedef için otomatik almayı aç/kapat |
+| `m` | Genel modu değiştir (`NOTIFY-ONLY` / `AUTO-CLAIM`, onay penceresiyle) |
+| `t` | Etkin bildirim kanallarına test mesajı gönder |
+| `↑` / `k`, `↓` / `j` | Tabloda satır seç |
+| `Home` / `g`, `End` / `G` | İlk / son hedefe git |
+| `PgUp` / `PgDn` | Olay günlüğünü kaydır |
+| `q` / `Ctrl-C` | Çık (`attach` modunda daemon çalışmaya devam eder) |
+
 ## VDS'e kurulum
 
 Aracın Discord'a erişebildiği bir ülkede bir Linux VDS seçin. Kurulum betiği systemd servisini kurar:
